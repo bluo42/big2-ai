@@ -1,2 +1,3 @@
 numpy>=1.24
 gymnasium>=0.29
+flask>=3.0

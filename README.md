@@ -1,76 +1,147 @@
-# Big 2 — Gym Environment, Strategies, and RL Testbed
+# Big 2 — Playable UI, Gym Environment, and an RL Research Ladder
 
 A [Gymnasium](https://gymnasium.farama.org/) take on the card game **Big 2**
-(Deuces / 鋤大D), plus a pure-Python game engine, baseline strategies, a
-scoring-variant experiment runner, and a first learned policy — the
-foundation for exploring optimal play with reinforcement learning, ML, and
-game-theory methods.
+(Deuces / 鋤大D): a pure-Python engine with configurable house rules, a sleek
+web UI for playing against the AIs, scripted and learned strategies organized
+as a research ladder (decomposition search → ISMCTS → DMC → deep RL), and a
+documented experiment methodology (`docs/EXPERIMENTS.md`).
 
 ```
 big2/
-  cards.py        card encoding (3♦ = 0 ... 2♠ = 51)
-  combos.py       hand classification, comparison, legal-move generation
-  game.py         4-player engine: tricks, passing, scoring modifiers
-  env.py          Gymnasium env (action-masked Discrete space)
-  strategies.py   baseline strategies
-  rl.py           linear move-scorer trained with cross-entropy method
-  experiments.py  strategy tournaments across scoring variants
-tests/            unit tests for rules, scoring, game flow, and the env
+  cards.py          card encoding (3♦ = 0 ... 2♠ = 51)
+  combos.py         hand classification, comparison, legal-move generation
+  rules.py          house-rule variants (small, deliberate variant space)
+  game.py           2-4 player engine: tricks, passing, scoring, clone()
+  env.py            Gymnasium env (action-masked Discrete space)
+  strategies.py     scripted baselines
+  decomposition.py  exact minimum-plays hand decomposition + strategy
+  ismcts.py         determinized ISMCTS reference opponent (no learning)
+  rl.py             linear move-scorer trained with cross-entropy method
+  dmc.py            DouZero-style DMC: Q(s, a) over encoded actions
+  experiments.py    seat-rotated tournaments across scoring variants
+  server.py         Flask backend for the web UI
+  static/           the UI (self-contained HTML/JS/CSS)
+  policies/         trained weights (committed)
+docs/EXPERIMENTS.md experiment methodology & research roadmap
+tests/              46 unit tests
 ```
 
-## Rules implemented
-
-- 4 players, 13 cards each. Seats play in order 0 → 1 → 2 → 3
-  (counter-clockwise around a table).
-- **Rank order** `3 < 4 < ... < K < A < 2`;
-  **suit order** `diamonds < clubs < hearts < spades`.
-- The holder of the **3♦ leads the first trick** and the first play must
-  include it.
-- Classes: **singles, pairs, and 5-card poker hands** — no lone triples.
-- Following a play means beating it within the same size class; **passing is
-  always allowed when not leading**, but a pass locks you out for the rest of
-  that trick. The trick winner leads the next trick with any class.
-- **5-card hierarchy**: straight < flush < full house < four-of-a-kind
-  (+ kicker) < straight flush.
-  - *Straight*: highest card's rank, then that card's suit. 2s can't appear
-    in straights and there's no wrap-around; `10-J-Q-K-A` is the top straight.
-  - *Flush*: suit first, then highest card (a ♠ flush beats any ♥ flush).
-  - *Full house*: rank of the triple. *Quads*: rank of the four.
-- **Winning & payment**: first player to shed all cards wins; every other
-  player pays the winner their cards-remaining. Modifiers (each toggleable,
-  each adds the base payment again):
-  - holding a 2 at game end (`two_modifier`, optional `per_two` stacking),
-  - holding ≥ 10 cards at game end (`big_hand_modifier`).
-
-  A loser with 11 cards including a 2 pays `11 × 3 = 33` with both modifiers.
-
-Assumptions where the house rules were silent: four-of-a-kind + kicker and
-straight flushes are included as 5-card hands (standard Big 2); there are no
-cross-class bombs; strategic passing is allowed. All of these live in
-`combos.py` / `game.py` and are easy to change.
-
-## Quick start
+## Play it
 
 ```bash
 pip install -r requirements.txt
-python -m unittest discover -s tests          # run the test suite
-python -m big2.experiments --games 1000       # baseline tournament
-python -m big2.rl --iters 25 --pop 32         # train the linear policy
-python -m big2.experiments --games 2000 --policy-file big2/policies/linear_cem.npz
+python -m big2.server          # then open http://127.0.0.1:8080
 ```
 
-### Using the engine directly
+- Choose **1, 2, or 3 AI opponents** (2-4 players total; with fewer than 4,
+  the undealt cards stay hidden, and the lowest card actually in play opens).
+- Pick each AI: `Smart` (heuristic), `DMC` / `Linear` (trained), `ISMCTS`
+  (search), `Decomposition`, and simpler baselines.
+- Adjust **house rules** before dealing: lone triples, pass lock-out vs.
+  soft pass, flush comparison, card-count multipliers, 2-holder penalty.
+- In game: click cards to select (the Play button labels the combo it
+  forms), **sort by rank or suit**, follow the **action history** panel,
+  and ask for a **hint** from the trained policy.
 
-```python
-from big2 import Big2Game, ScoringConfig
-from big2.strategies import PlayLowest, SmartHeuristic
+## Rules implemented
 
-game = Big2Game(scoring=ScoringConfig(two_modifier=True, big_hand_modifier=True))
-scores = game.play_out([PlayLowest(), PlayLowest(), SmartHeuristic(), SmartHeuristic()])
-print(scores)  # zero-sum, e.g. {0: -5, 1: -14, 2: 27, 3: -8}
+- 4 players (2-3 supported), 13 cards each, seats play counter-clockwise.
+- **Rank order** `3 < 4 < ... < K < A < 2`;
+  **suit order** `diamonds < clubs < hearts < spades`.
+- Holder of the lowest dealt card (3♦ in a 4-player game) leads the first
+  trick and must include it.
+- Classes: **singles, pairs, and 5-card poker hands**. Following means
+  beating within the same size class; passing is always allowed when not
+  leading. The trick winner leads any class.
+- **5-card hierarchy**: straight < flush < full house < four-of-a-kind
+  (+ kicker) < straight flush. Straights: top card's rank then suit (no 2s,
+  no wrap-around). Flushes: suit first, then ranks. Full house: the triple.
+- **Payment**: losers pay the winner cards-remaining, with tiered
+  multipliers — **10-12 cards pay double, all 13 pay triple**.
+
+### House-rule variants (`big2/rules.py`, all in the UI)
+
+| flag | default | variant |
+|------|---------|---------|
+| `allow_triples` | off | lone triples playable as their own class, compared by rank |
+| `pass_locks` | on | off = a pass only skips your turn (trick ends on a full round of consecutive passes) |
+| `flush_rank_first` | off | on = flushes compare top ranks before suit (poker style) |
+| `ScoringConfig.big_hand_double/full_hand_triple` | on | tiered card-count multipliers |
+| `ScoringConfig.two_modifier` | off | legacy: holding a 2 at game end adds the base payment again |
+
+## The agent ladder
+
+Following the Dou Dizhu lineage (DouZero → PerfectDou) rather than poker —
+see `docs/EXPERIMENTS.md` for the full methodology and roadmap.
+
+1. ➖ *Fast vectorized env* — pure-Python engine profiled at ~65 µs/step,
+   sufficient through step 4; bitboards deferred.
+2. ✅ *Scripted baselines* — `lowest`, `highest`, `dumper`, `smart`, and
+   `decomp`: exact **minimum-plays hand decomposition** (memoized
+   branch-and-bound, <1 ms typical) used as a baseline, a feature, and an
+   endgame oracle.
+3. ✅ *ISMCTS* — root-determinized search over sampled opponent hands with
+   UCB rollout allocation. Strongest no-training opponent.
+4. ✅ *DMC with action encoding* — DouZero's trick: encode each candidate
+   move as input (52-bit mask + metadata) and regress Q(s, a) on final
+   Monte-Carlo returns from shared-weights self-play. Linear/numpy here;
+   torch MLP is the designated upgrade.
+5. ⬜ PPO + set-attention head + perfect-info critic + belief auxiliary.
+6. ⬜ League/PSRO population (proxy exploitability via best-response).
+7. ⬜ Search at inference (policy prior + value + belief particles).
+8. ⬜ Runtime opponent adaptation with bounded deviation.
+
+There is also `linear` — a CEM-trained move scorer over hand-crafted
+features (`big2/rl.py`) that predates the ladder and remains a strong
+reference.
+
+## Results (seat-rotated, seed 1; cells: avg score/game, win rate)
+
+Baselines, 1,000 games/variant:
+
+```
+   variant |             lowest |            highest |             dumper |              smart
+----------------------------------------------------------------------------------------------
+     plain |       -1.35 ( 20%) |       -3.89 (  4%) |       +3.06 ( 37%) |       +2.18 ( 39%)
+    tiered |       -1.55 ( 20%) |       -4.38 (  4%) |       +3.65 ( 37%) |       +2.28 ( 39%)
+       two |       -1.56 ( 20%) |       -3.85 (  4%) |       +3.20 ( 37%) |       +2.21 ( 39%)
+tiered+two |       -1.76 ( 20%) |       -4.34 (  4%) |       +3.79 ( 37%) |       +2.31 ( 39%)
 ```
 
-### Using the Gym environment
+Stronger lineup, 1,000 games/variant — the trained agents on top:
+
+```
+   variant |              smart |             decomp |             linear |                dmc
+----------------------------------------------------------------------------------------------
+    tiered |       -1.55 ( 21%) |       -1.44 ( 26%) |       +2.22 ( 30%) |       +0.77 ( 24%)
+     plain |       -1.22 ( 21%) |       -0.72 ( 26%) |       +1.63 ( 30%) |       +0.31 ( 24%)
+```
+
+ISMCTS (100 sims), 200 games, tiered — the strongest no-training agent:
+
+```
+   variant |             ismcts |              smart |             decomp |             dumper
+----------------------------------------------------------------------------------------------
+    tiered |       +1.60 ( 32%) |       +0.33 ( 27%) |       -1.65 ( 22%) |       -0.28 ( 20%)
+```
+
+Early findings worth keeping: always playing your strongest cards
+(`highest`) is the reliably worst strategy; `decomp` wins often (26% in a
+strong lineup) but its structure-preserving passes make its *losses* heavy
+under tiered multipliers — win rate and average score genuinely diverge,
+which is exactly why we report both.
+
+## Training & experiments
+
+```bash
+python -m unittest discover -s tests            # test suite
+python -m big2.experiments --games 1000         # tournament across variants
+python -m big2.experiments --games 500 --strategies smart decomp linear dmc
+python -m big2.rl  --iters 25 --pop 32          # retrain CEM linear policy
+python -m big2.dmc --episodes 60000             # retrain DMC policy
+```
+
+### Gym environment
 
 ```python
 import numpy as np
@@ -83,92 +154,24 @@ done = False
 while not done:
     action = int(np.random.choice(np.flatnonzero(obs["action_mask"])))
     obs, reward, done, truncated, info = env.step(action)
-print(reward, info["scores"])
 ```
 
-- **Action space**: `Discrete(2048)` slots — slot 0 is PASS, slots 1..N are
-  the current legal combos **sorted weakest-first** (so the lowest legal slot
-  is always the weakest play). The mask is in `obs["action_mask"]` and via
-  `env.action_masks()` (sb3-contrib `MaskablePPO`-compatible).
-- **Observation**: 175-dim vector — own hand (52), table combo (52) + type
-  one-hot, all played cards (52), opponent card counts, passed flags, table
-  owner, leading flag.
-- **Reward**: 0 until the game ends; terminal reward is the agent's score
-  under the configured `ScoringConfig`.
+Action space: `Discrete(2048)` slots — 0 is PASS, slots 1..N the legal
+combos sorted weakest-first; masks via `obs["action_mask"]` /
+`env.action_masks()` (sb3-contrib MaskablePPO-compatible). Terminal reward
+is the seat's score under the configured `ScoringConfig`.
 
-## Baseline strategies
+### Engine
 
-| name      | idea |
-|-----------|------|
-| `random`  | uniform over legal moves (+ pass) |
-| `lowest`  | always the weakest feasible play; leads its lowest single |
-| `highest` | always the strongest feasible play; leads its biggest class |
-| `dumper`  | leads 5-card hands (lowest first), then pairs, then singles; follows with the weakest play |
-| `smart`   | partitions its hand into units (5-card hands / pairs / singles), refuses to break units while the hand is big, passes to protect strength, plays high to deny nearly-finished opponents |
+```python
+from big2 import Big2Game, RuleConfig, ScoringConfig
+from big2.strategies import SmartHeuristic
+from big2.ismcts import ISMCTSStrategy
 
-### Tournament results (1000 games/variant, seats rotated, seed 1)
-
+game = Big2Game(
+    rules=RuleConfig(allow_triples=True, pass_locks=False),
+    scoring=ScoringConfig(),          # tiered: 10-12 x2, 13 x3
+    num_players=3,
+)
+print(game.play_out([ISMCTSStrategy(n_sims=100), SmartHeuristic(), SmartHeuristic()]))
 ```
-   variant |             lowest |            highest |             dumper |              smart
-----------------------------------------------------------------------------------------------
-     plain |       -1.35 ( 20%) |       -3.89 (  4%) |       +3.06 ( 37%) |       +2.18 ( 39%)
-       two |       -1.56 ( 20%) |       -3.85 (  4%) |       +3.20 ( 37%) |       +2.21 ( 39%)
-       big |       -1.54 ( 20%) |       -4.41 (  4%) |       +3.66 ( 37%) |       +2.28 ( 39%)
-   two+big |       -1.75 ( 20%) |       -4.37 (  4%) |       +3.81 ( 37%) |       +2.31 ( 39%)
-
-cells: average score per game (win rate)
-```
-
-Early findings: greedily playing your strongest cards (`highest`) is the
-worst thing you can do; shedding 5-card hands early (`dumper`) and
-structure-preserving play (`smart`) dominate. The scoring modifiers mostly
-amplify the spread rather than reorder these fixed strategies — adapting *to*
-the modifiers (e.g. dumping 2s early under the `two` rule, racing under the
-`big` rule) is exactly what a learned policy should discover.
-
-## First learned policy (`big2/rl.py`)
-
-A linear scorer over ~20 state/move features (move strength, cards left,
-whether the move breaks a hand unit, whether it spends a 2, danger/endgame
-flags, ...) picks the argmax-scoring legal option each turn. Weights are
-trained with the **cross-entropy method** against fixed opponents
-(`lowest` / `dumper` / `smart`), with common random numbers across each
-population. Trained weights live in `big2/policies/linear_cem.npz`
-(25 iterations, population 32, 48 games/eval, seed 3).
-
-The trained policy beats every baseline in every scoring variant
-(1000 games/variant, seats rotated, seed 1):
-
-```
-   variant |             lowest |             dumper |              smart |             linear
-----------------------------------------------------------------------------------------------
-     plain |       -3.09 ( 11%) |       +0.08 ( 23%) |       +0.33 ( 29%) |       +2.68 ( 37%)
-       two |       -3.62 ( 11%) |       +0.00 ( 23%) |       +0.47 ( 29%) |       +3.15 ( 37%)
-       big |       -3.47 ( 11%) |       +0.16 ( 23%) |       +0.20 ( 29%) |       +3.11 ( 37%)
-   two+big |       -4.00 ( 11%) |       +0.09 ( 23%) |       +0.33 ( 29%) |       +3.58 ( 37%)
-```
-
-The learned weights are interpretable and match Big-2 intuition: prefer
-playing over passing (`is_pass` −1.7, even more in the endgame), shed the
-biggest class you can (`size5` +2.7 > `size2` +2.1 > `size1` +1.1) but with
-the *lowest* cards that work (`top_card_norm` −1.5), don't break hand units
-(−1.3), hold 2s and aces back (−0.3 / −0.5), and always take a move that
-empties your hand (`goes_out` +2.3).
-
-## Roadmap toward optimal play
-
-1. **Better features / self-play CEM** — train against copies of itself
-   instead of fixed opponents to avoid overfitting to exploitable baselines.
-2. **Deep RL** — the env is MaskablePPO-ready (sb3-contrib) out of the box;
-   DQN over (state, move-features) pairs is another natural fit for the
-   variable action set.
-3. **Counterfactual regret / game theory** — Big 2 is zero-sum but 4-player
-   imperfect-information; neural-CFR or best-response ladders
-   (policy iteration through exploiters) are the principled route.
-4. **Per-variant specialists** — train one policy per scoring variant
-   (`plain`, `two`, `big`, `two+big`) and compare how optimal play shifts:
-   how early do you shed 2s when holding them is expensive? How much do you
-   race when the ≥10-card penalty looms?
-5. **Search hybrids** — determinized MCTS over the engine (deal opponents'
-   unseen cards, roll out with the learned policy) for a strong reference
-   player.

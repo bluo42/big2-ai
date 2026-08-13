@@ -1,7 +1,8 @@
 """Combo (play) classification, comparison, and legal-move generation.
 
 Legal classes: singles, pairs, and 5-card poker hands.  Triples cannot be
-played alone.
+played alone under the house rules; pass ``RuleConfig(allow_triples=True)``
+to enable them as their own size class (compared by rank).
 
 5-card hierarchy (low to high):
     straight < flush < full house < four of a kind (+ kicker) < straight flush
@@ -11,7 +12,9 @@ Tiebreakers within a type:
 - pair:        rank, then highest suit present in the pair.
 - straight:    rank of the highest card, then suit of that card.
 - flush:       suit first, then highest card, next card, ... (a spade flush
-               beats any heart flush regardless of ranks).
+               beats any heart flush regardless of ranks).  With
+               ``RuleConfig(flush_rank_first=True)`` ranks compare before
+               the suit (poker style).
 - full house:  rank of the triple.
 - four kind:   rank of the four (kicker never matters).
 - str. flush:  rank of the highest card, then suit (== the flush suit).
@@ -29,6 +32,7 @@ from enum import IntEnum
 from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 
 from big2.cards import ACE_RANK, Card, hand_to_str, rank, suit
+from big2.rules import DEFAULT_RULES, RuleConfig
 
 
 class ComboType(IntEnum):
@@ -39,6 +43,7 @@ class ComboType(IntEnum):
     FULL_HOUSE = 4
     FOUR_OF_A_KIND = 5
     STRAIGHT_FLUSH = 6
+    TRIPLE = 7  # appended so 5-card hierarchy values above stay stable
 
 
 FIVE_CARD_TYPES = (
@@ -89,7 +94,9 @@ def _straight_high(cards: Sequence[Card]) -> Optional[Card]:
     return max(cards)  # card int order == (rank, suit) order
 
 
-def classify(cards: Iterable[Card]) -> Optional[Combo]:
+def classify(
+    cards: Iterable[Card], rules: RuleConfig = DEFAULT_RULES
+) -> Optional[Combo]:
     """Classify a set of cards as a legal combo, or None if unplayable."""
     cs = tuple(sorted(cards))
     n = len(cs)
@@ -99,8 +106,12 @@ def classify(cards: Iterable[Card]) -> Optional[Combo]:
         if rank(cs[0]) == rank(cs[1]):
             return Combo(ComboType.PAIR, cs, (rank(cs[1]), suit(cs[1])))
         return None
+    if n == 3:
+        if rules.allow_triples and len({rank(c) for c in cs}) == 1:
+            return Combo(ComboType.TRIPLE, cs, (rank(cs[2]), suit(cs[2])))
+        return None
     if n != 5:
-        return None  # no lone triples, no other sizes
+        return None
 
     is_flush = len({suit(c) for c in cs}) == 1
     high = _straight_high(cs)
@@ -118,7 +129,11 @@ def classify(cards: Iterable[Card]) -> Optional[Combo]:
         return Combo(ComboType.FULL_HOUSE, cs, (ComboType.FULL_HOUSE, triple_rank))
     if is_flush:
         ranks_desc = tuple(sorted((rank(c) for c in cs), reverse=True))
-        return Combo(ComboType.FLUSH, cs, (ComboType.FLUSH, suit(cs[0]), ranks_desc))
+        if rules.flush_rank_first:
+            key = (ComboType.FLUSH, ranks_desc, suit(cs[0]))
+        else:
+            key = (ComboType.FLUSH, suit(cs[0]), ranks_desc)
+        return Combo(ComboType.FLUSH, cs, key)
     if high is not None:
         return Combo(ComboType.STRAIGHT, cs, (ComboType.STRAIGHT, rank(high), suit(high)))
     return None
@@ -128,8 +143,9 @@ def beats(challenger: Combo, incumbent: Combo) -> bool:
     """True if ``challenger`` may be played on top of ``incumbent``.
 
     Combos must be the same size class (single vs single, pair vs pair,
-    5-card vs 5-card).  Within the 5-card class the type hierarchy applies;
-    there are no bombs across size classes.
+    triple vs triple when enabled, 5-card vs 5-card).  Within the 5-card
+    class the type hierarchy applies; there are no bombs across size
+    classes.
     """
     if len(challenger) != len(incumbent):
         return False
@@ -183,7 +199,11 @@ def _five_card_candidates(hand: Sequence[Card]) -> List[Tuple[Card, ...]]:
     return list(candidates)
 
 
-def generate_moves(hand: Sequence[Card], to_beat: Optional[Combo] = None) -> List[Combo]:
+def generate_moves(
+    hand: Sequence[Card],
+    to_beat: Optional[Combo] = None,
+    rules: RuleConfig = DEFAULT_RULES,
+) -> List[Combo]:
     """All legal combos from ``hand``, sorted weakest-first.
 
     ``to_beat`` is the combo currently on the table (None when leading).
@@ -201,9 +221,14 @@ def generate_moves(hand: Sequence[Card], to_beat: Optional[Combo] = None) -> Lis
             for pair in itertools.combinations(group, 2):
                 moves.append(classify(pair))
 
+    if rules.allow_triples and need in (None, 3):
+        for group in _rank_counts(hand).values():
+            for triple in itertools.combinations(group, 3):
+                moves.append(classify(triple, rules))
+
     if need in (None, 5):
         for cand in _five_card_candidates(hand):
-            combo = classify(cand)
+            combo = classify(cand, rules)
             if combo is not None:
                 moves.append(combo)
 

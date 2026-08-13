@@ -1,21 +1,26 @@
-"""Big 2 game engine: 4 players, tricks, passing, and scoring.
+"""Big 2 game engine: 2-4 players, tricks, passing, and scoring.
 
-Seats are numbered 0-3 and play proceeds 0 -> 1 -> 2 -> 3 -> 0, which
-represents counter-clockwise order around a physical table.
+Seats are numbered 0..n-1 and play proceeds in increasing seat order,
+which represents counter-clockwise order around a physical table.
+
+Dealing: every player receives 13 cards.  With fewer than 4 players the
+remaining cards stay face down and out of play (pagat.com convention).
 
 Trick flow:
-- The holder of the 3 of diamonds leads the first trick and the first
-  play must include the 3 of diamonds.
+- The holder of the lowest card in play (the 3 of diamonds in a 4-player
+  game) leads the first trick and the first play must include that card.
 - Following players must either beat the combo on the table (same size
   class) or pass.  Passing is always allowed when not leading, even if
   the player could beat the table ("strategic pass").
-- A player who passes is locked out for the remainder of the trick.
-- When everyone else has passed, the last player to play wins the trick
-  and leads the next one (any class).  The leader may not pass.
+- With ``RuleConfig(pass_locks=True)`` (house rule) a player who passes
+  is locked out for the remainder of the trick.  With ``pass_locks=False``
+  a pass only skips the turn; the trick ends when every other player
+  passes consecutively since the last play.
+- When the turn returns to the last player who played, they win the
+  trick and lead the next one (any class).  The leader may not pass.
 
 The game ends the moment one player sheds their last card.  Every other
-player pays the winner based on cards remaining, with configurable
-modifiers (see ScoringConfig).
+player pays the winner based on cards remaining (see ScoringConfig).
 """
 
 from __future__ import annotations
@@ -24,10 +29,11 @@ import random
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Tuple
 
-from big2.cards import THREE_OF_DIAMONDS, TWO_RANK, Card, full_deck, rank
+from big2.cards import TWO_RANK, Card, full_deck, rank
 from big2.combos import Combo, generate_moves
+from big2.rules import DEFAULT_RULES, RuleConfig
 
-NUM_PLAYERS = 4
+NUM_PLAYERS = 4  # default table size
 CARDS_PER_PLAYER = 13
 
 
@@ -35,42 +41,48 @@ CARDS_PER_PLAYER = 13
 class ScoringConfig:
     """Payment rules applied to each loser at game end.
 
-    Base payment is the number of cards left in the loser's hand.
-    Each active modifier adds the base again (i.e. acts as +1x):
+    Base payment is the number of cards left in the loser's hand,
+    scaled by tiered card-count multipliers (the house rule):
 
-    - ``two_modifier``:      loser still holds at least one 2.
-    - ``per_two``:           count each 2 held as its own +1x (only
-                             meaningful when ``two_modifier`` is True).
-    - ``big_hand_modifier``: loser holds >= ``big_hand_threshold`` cards.
+    - ``big_hand_double``:  10-12 cards remaining pays double.
+    - ``full_hand_triple``: all 13 cards remaining pays triple.
 
-    With both modifiers active, a loser holding one 2 and 11 cards pays
-    11 * (1 + 1 + 1) = 33.
+    Legacy modifier kept for experiments (off by default):
+
+    - ``two_modifier``: holding a 2 at game end adds the base again
+      (+1x); with ``per_two`` each 2 held adds +1x.
     """
 
-    two_modifier: bool = True
-    per_two: bool = False
-    big_hand_modifier: bool = True
+    big_hand_double: bool = True
+    full_hand_triple: bool = True
     big_hand_threshold: int = 10
+    two_modifier: bool = False
+    per_two: bool = False
 
     def payment(self, cards_left: List[Card]) -> int:
         base = len(cards_left)
         if base == 0:
             return 0
-        multiplier = 1
+        if self.full_hand_triple and base == CARDS_PER_PLAYER:
+            multiplier = 3
+        elif self.big_hand_double and base >= self.big_hand_threshold:
+            multiplier = 2
+        else:
+            multiplier = 1
         if self.two_modifier:
             twos = sum(1 for c in cards_left if rank(c) == TWO_RANK)
             if twos:
                 multiplier += twos if self.per_two else 1
-        if self.big_hand_modifier and base >= self.big_hand_threshold:
-            multiplier += 1
         return base * multiplier
 
     def label(self) -> str:
         parts = []
+        if self.big_hand_double:
+            parts.append(f">={self.big_hand_threshold}x2")
+        if self.full_hand_triple:
+            parts.append("13x3")
         if self.two_modifier:
             parts.append("per_two" if self.per_two else "two")
-        if self.big_hand_modifier:
-            parts.append(f">={self.big_hand_threshold}cards")
         return "+".join(parts) if parts else "plain"
 
 
@@ -78,6 +90,7 @@ class ScoringConfig:
 class PlayRecord:
     player: int
     combo: Optional[Combo]  # None = pass
+    trick_end: bool = False  # this action closed the trick
 
 
 class Big2Game:
@@ -86,9 +99,15 @@ class Big2Game:
     def __init__(
         self,
         scoring: Optional[ScoringConfig] = None,
+        rules: Optional[RuleConfig] = None,
+        num_players: int = NUM_PLAYERS,
         rng: Optional[random.Random] = None,
     ):
+        if not 2 <= num_players <= 4:
+            raise ValueError("num_players must be 2, 3, or 4")
         self.scoring = scoring or ScoringConfig()
+        self.rules = rules or DEFAULT_RULES
+        self.num_players = num_players
         self.rng = rng or random.Random()
         self.reset()
 
@@ -99,15 +118,16 @@ class Big2Game:
         self.rng.shuffle(deck)
         self.hands: List[List[Card]] = [
             sorted(deck[i * CARDS_PER_PLAYER : (i + 1) * CARDS_PER_PLAYER])
-            for i in range(NUM_PLAYERS)
+            for i in range(self.num_players)
         ]
+        self.start_card: Card = min(min(hand) for hand in self.hands)
         self.turn: int = next(
-            p for p in range(NUM_PLAYERS) if THREE_OF_DIAMONDS in self.hands[p]
+            p for p in range(self.num_players) if self.start_card in self.hands[p]
         )
         self.first_play = True
         self.table_combo: Optional[Combo] = None  # combo to beat, None when leading
         self.table_player: Optional[int] = None  # who played table_combo
-        self.passed: List[bool] = [False] * NUM_PLAYERS  # locked out this trick
+        self.passed: List[bool] = [False] * self.num_players
         self.history: List[PlayRecord] = []
         self.played_cards: List[Card] = []
         self.winner: Optional[int] = None
@@ -140,9 +160,9 @@ class Big2Game:
         p = self.turn if player is None else player
         if p != self.turn:
             return []
-        moves = generate_moves(self.hands[p], self.table_combo)
+        moves = generate_moves(self.hands[p], self.table_combo, self.rules)
         if self.first_play:
-            moves = [m for m in moves if THREE_OF_DIAMONDS in m.cards]
+            moves = [m for m in moves if self.start_card in m.cards]
         return moves
 
     # ------------------------------------------------------------------
@@ -171,6 +191,9 @@ class Big2Game:
             self.table_combo = combo
             self.table_player = player
             self.first_play = False
+            if not self.rules.pass_locks:
+                # Soft pass: a play reopens the trick for everyone.
+                self.passed = [False] * self.num_players
             self.history.append(PlayRecord(player, combo))
             if not hand:
                 self._finish(player)
@@ -179,21 +202,29 @@ class Big2Game:
         self._advance_turn()
 
     def _advance_turn(self) -> None:
-        nxt = (self.turn + 1) % NUM_PLAYERS
-        while self.passed[nxt]:
-            nxt = (nxt + 1) % NUM_PLAYERS
+        nxt = (self.turn + 1) % self.num_players
+        if self.rules.pass_locks:
+            while self.passed[nxt]:
+                nxt = (nxt + 1) % self.num_players
+        # Soft pass needs no skipping: flags reset on every play, so the
+        # turn simply walks the table and the trick ends when it reaches
+        # the table owner again (a full round of consecutive passes).
         if nxt == self.table_player:
-            # Everyone else passed: trick won, winner leads fresh.
+            # Trick won: winner leads fresh.
             self.table_combo = None
             self.table_player = None
-            self.passed = [False] * NUM_PLAYERS
+            self.passed = [False] * self.num_players
+            if self.history:
+                self.history[-1].trick_end = True
         self.turn = nxt
 
     def _finish(self, winner: int) -> None:
         self.winner = winner
+        if self.history:
+            self.history[-1].trick_end = True
         payments = {
             p: self.scoring.payment(self.hands[p])
-            for p in range(NUM_PLAYERS)
+            for p in range(self.num_players)
             if p != winner
         }
         self.scores = {p: -pay for p, pay in payments.items()}
@@ -202,6 +233,31 @@ class Big2Game:
     # ------------------------------------------------------------------
     # Convenience
     # ------------------------------------------------------------------
+
+    def clone(self, rng: Optional[random.Random] = None) -> "Big2Game":
+        """Copy for search/rollouts.  Combos are immutable and shared; the
+        last history record is copied because step() may mutate its
+        trick_end flag."""
+        g = object.__new__(Big2Game)
+        g.scoring = self.scoring
+        g.rules = self.rules
+        g.num_players = self.num_players
+        g.rng = rng or random.Random()
+        g.hands = [list(h) for h in self.hands]
+        g.start_card = self.start_card
+        g.turn = self.turn
+        g.first_play = self.first_play
+        g.table_combo = self.table_combo
+        g.table_player = self.table_player
+        g.passed = list(self.passed)
+        g.history = list(self.history)
+        if g.history:
+            last = g.history[-1]
+            g.history[-1] = PlayRecord(last.player, last.combo, last.trick_end)
+        g.played_cards = list(self.played_cards)
+        g.winner = self.winner
+        g.scores = dict(self.scores) if self.scores else None
+        return g
 
     def play_out(self, policies, max_steps: int = 10_000) -> Dict[int, int]:
         """Run the game to completion with one policy per seat."""

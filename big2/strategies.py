@@ -23,7 +23,7 @@ from typing import List, Optional
 
 from big2.cards import Card, rank
 from big2.combos import Combo, classify, generate_moves
-from big2.game import NUM_PLAYERS, Big2Game
+from big2.game import Big2Game
 
 
 class Strategy:
@@ -167,7 +167,7 @@ class SmartHeuristic(Strategy):
 
         hand = game.hands[player]
         opp_counts = [
-            len(game.hands[p]) for p in range(NUM_PLAYERS) if p != player
+            len(game.hands[p]) for p in range(game.num_players) if p != player
         ]
         danger = min(opp_counts) <= self.deny_threshold
         endgame = len(hand) <= self.endgame_size

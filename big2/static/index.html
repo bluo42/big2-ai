@@ -1,0 +1,687 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Big 2</title>
+<style>
+  :root {
+    --bg: #101422;
+    --panel: #1a2032;
+    --panel-2: #232b42;
+    --line: #2e3854;
+    --text: #e8ecf6;
+    --muted: #8a94ad;
+    --accent: #4f8cff;
+    --accent-2: #37c978;
+    --danger: #e05563;
+    --card-bg: #f7f8fb;
+    --card-edge: #c9cede;
+    --s-diamond: #2f7fd1;
+    --s-club: #27995c;
+    --s-heart: #d64550;
+    --s-spade: #23233a;
+    font-size: 15px;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    background: radial-gradient(1200px 700px at 50% -10%, #1b2340 0%, var(--bg) 60%);
+    color: var(--text);
+    font-family: "Avenir Next", "Segoe UI", system-ui, -apple-system, sans-serif;
+    min-height: 100vh;
+  }
+  button {
+    font: inherit; color: inherit; background: var(--panel-2);
+    border: 1px solid var(--line); border-radius: 9px;
+    padding: 8px 16px; cursor: pointer; transition: all .12s ease;
+  }
+  button:hover:not(:disabled) { border-color: var(--accent); transform: translateY(-1px); }
+  button:disabled { opacity: .38; cursor: default; }
+  button.primary { background: var(--accent); border-color: var(--accent); font-weight: 600; }
+  button.good { background: var(--accent-2); border-color: var(--accent-2); color: #08281a; font-weight: 700; }
+  button.warn { background: transparent; border-color: var(--danger); color: var(--danger); }
+  select {
+    font: inherit; color: var(--text); background: var(--panel-2);
+    border: 1px solid var(--line); border-radius: 8px; padding: 6px 10px;
+  }
+  .hidden { display: none !important; }
+
+  /* ---------- setup ---------- */
+  #setup { max-width: 560px; margin: 6vh auto; padding: 0 16px; }
+  #setup h1 { font-size: 2.4rem; letter-spacing: .04em; }
+  #setup h1 span { color: var(--accent); }
+  #setup .tag { color: var(--muted); margin: 4px 0 26px; }
+  .panel {
+    background: var(--panel); border: 1px solid var(--line);
+    border-radius: 14px; padding: 20px 22px; margin-bottom: 16px;
+  }
+  .panel h2 {
+    font-size: .8rem; text-transform: uppercase; letter-spacing: .12em;
+    color: var(--muted); margin-bottom: 14px;
+  }
+  .seg { display: inline-flex; border: 1px solid var(--line); border-radius: 9px; overflow: hidden; }
+  .seg button { border: 0; border-radius: 0; padding: 8px 22px; background: transparent; }
+  .seg button.on { background: var(--accent); font-weight: 700; }
+  .ai-row { display: flex; align-items: center; gap: 10px; margin-top: 10px; }
+  .ai-row label { width: 44px; color: var(--muted); }
+  .rule { display: flex; align-items: flex-start; gap: 10px; padding: 7px 0; cursor: pointer; }
+  .rule input { margin-top: 4px; accent-color: var(--accent); width: 15px; height: 15px; }
+  .rule small { display: block; color: var(--muted); }
+  #startBtn { width: 100%; padding: 13px; font-size: 1.05rem; }
+
+  /* ---------- game ---------- */
+  #game { display: none; max-width: 1180px; margin: 0 auto; padding: 12px 16px 28px; }
+  #game.active { display: grid; grid-template-columns: 1fr 250px; gap: 14px; }
+  #topbar {
+    grid-column: 1 / -1; display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+  }
+  #topbar .chip {
+    font-size: .72rem; background: var(--panel-2); border: 1px solid var(--line);
+    padding: 3px 10px; border-radius: 999px; color: var(--muted);
+  }
+  #topbar .spacer { flex: 1; }
+
+  #board { display: flex; flex-direction: column; gap: 14px; min-width: 0; }
+  #opponents { display: flex; gap: 12px; justify-content: center; }
+  .opp {
+    background: var(--panel); border: 1px solid var(--line); border-radius: 12px;
+    padding: 10px 16px; min-width: 168px; text-align: center; position: relative;
+    transition: border-color .15s, box-shadow .15s;
+  }
+  .opp.active { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent), 0 0 18px #4f8cff33; }
+  .opp .name { font-weight: 600; font-size: .92rem; }
+  .opp .count { font-size: 1.7rem; font-weight: 700; margin: 2px 0; }
+  .opp .count small { font-size: .65rem; font-weight: 400; color: var(--muted); }
+  .opp .badge {
+    position: absolute; top: -8px; right: -6px; font-size: .66rem; font-weight: 700;
+    background: var(--danger); border-radius: 999px; padding: 2px 8px; display: none;
+  }
+  .opp.passed .badge { display: block; }
+  .opp .last { font-size: .7rem; color: var(--muted); min-height: 1em; }
+
+  #table {
+    background: linear-gradient(160deg, #17301f, #122718);
+    border: 1px solid #2c4a35; border-radius: 16px;
+    min-height: 168px; display: flex; flex-direction: column;
+    align-items: center; justify-content: center; gap: 8px; padding: 16px;
+  }
+  #tableLabel { color: #9db8a6; font-size: .8rem; letter-spacing: .06em; }
+  #tableCards { display: flex; gap: 6px; min-height: 86px; align-items: center; }
+  #tableCards .empty { color: #567a63; font-size: .95rem; }
+
+  #status {
+    text-align: center; font-size: 1.02rem; min-height: 1.5em; font-weight: 500;
+  }
+  #status .combo-name { color: var(--accent-2); font-weight: 700; }
+
+  #handArea { background: var(--panel); border: 1px solid var(--line); border-radius: 14px; padding: 14px; }
+  #handControls { display: flex; align-items: center; gap: 8px; margin-bottom: 12px; flex-wrap: wrap; }
+  #handControls .spacer { flex: 1; }
+  #hand { display: flex; flex-wrap: wrap; gap: 0; padding: 6px 4px 2px; min-height: 96px; }
+
+  /* ---------- cards ---------- */
+  .card {
+    width: 62px; height: 88px; background: var(--card-bg);
+    border: 1px solid var(--card-edge); border-radius: 8px;
+    position: relative; flex: 0 0 auto; margin-right: -18px;
+    box-shadow: 0 2px 5px #0007; cursor: pointer; user-select: none;
+    transition: transform .1s ease, box-shadow .1s ease; color: #222;
+  }
+  .card:last-child { margin-right: 0; }
+  .card .tl { position: absolute; top: 5px; left: 7px; font-weight: 700; font-size: .95rem; line-height: 1.02; }
+  .card .tl small { display: block; font-size: .85rem; }
+  .card .pip { position: absolute; bottom: 6px; right: 8px; font-size: 1.55rem; }
+  .card:hover { transform: translateY(-6px); }
+  .card.sel { transform: translateY(-16px); box-shadow: 0 0 0 2px var(--accent), 0 8px 16px #000a; }
+  .card.hinted { box-shadow: 0 0 0 2px var(--accent-2), 0 6px 14px #000a; }
+  .card.mini { width: 46px; height: 66px; margin-right: -12px; cursor: default; }
+  .card.mini .tl { font-size: .78rem; top: 4px; left: 5px; }
+  .card.mini .tl small { font-size: .7rem; }
+  .card.mini .pip { font-size: 1.1rem; bottom: 4px; right: 6px; }
+  .card.mini:hover { transform: none; }
+  .suit-0 { color: var(--s-diamond); }
+  .suit-1 { color: var(--s-club); }
+  .suit-2 { color: var(--s-heart); }
+  .suit-3 { color: var(--s-spade); }
+
+  /* ---------- history ---------- */
+  #historyPanel {
+    background: var(--panel); border: 1px solid var(--line); border-radius: 14px;
+    padding: 12px; display: flex; flex-direction: column; max-height: 78vh;
+  }
+  #historyPanel h2 {
+    font-size: .74rem; text-transform: uppercase; letter-spacing: .12em;
+    color: var(--muted); margin-bottom: 8px;
+  }
+  #log { overflow-y: auto; flex: 1; font-size: .8rem; }
+  .log-entry { display: flex; gap: 8px; padding: 3px 4px; border-radius: 6px; align-items: baseline; }
+  .log-entry.me { background: #4f8cff14; }
+  .log-entry .who { color: var(--muted); flex: 0 0 68px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .log-entry .what { font-weight: 600; }
+  .log-entry .what.pass { color: var(--muted); font-weight: 400; font-style: italic; }
+  .log-entry .cards { letter-spacing: .02em; }
+  .log-trick-end { border-bottom: 1px dashed var(--line); margin: 5px 0; }
+
+  /* ---------- overlay ---------- */
+  #overlay {
+    position: fixed; inset: 0; background: #000a; backdrop-filter: blur(3px);
+    display: none; align-items: center; justify-content: center; z-index: 10;
+  }
+  #overlay.active { display: flex; }
+  #overlayBox {
+    background: var(--panel); border: 1px solid var(--line); border-radius: 16px;
+    padding: 28px 34px; text-align: center; max-width: 440px; width: 92%;
+  }
+  #overlayBox h2 { font-size: 1.5rem; margin-bottom: 4px; }
+  #overlayBox .sub { color: var(--muted); margin-bottom: 18px; }
+  #scoreTable { width: 100%; border-collapse: collapse; margin-bottom: 20px; font-size: .92rem; }
+  #scoreTable td, #scoreTable th { padding: 6px 8px; border-bottom: 1px solid var(--line); text-align: left; }
+  #scoreTable td:last-child, #scoreTable th:last-child { text-align: right; }
+  .pos { color: var(--accent-2); font-weight: 700; }
+  .neg { color: var(--danger); }
+  #overlayBox .btns { display: flex; gap: 10px; justify-content: center; }
+
+  @media (max-width: 900px) {
+    #game.active { grid-template-columns: 1fr; }
+    #historyPanel { max-height: 30vh; }
+  }
+</style>
+</head>
+<body>
+
+<!-- ============ SETUP ============ -->
+<div id="setup">
+  <h1>BIG <span>2</span></h1>
+  <div class="tag">diamonds &lt; clubs &lt; hearts &lt; spades &middot; 3 low, 2 high</div>
+
+  <div class="panel">
+    <h2>Opponents</h2>
+    <div class="seg" id="numAiSeg">
+      <button data-n="1">1 AI</button>
+      <button data-n="2">2 AIs</button>
+      <button data-n="3" class="on">3 AIs</button>
+    </div>
+    <div id="aiRows"></div>
+  </div>
+
+  <div class="panel">
+    <h2>House rules</h2>
+    <label class="rule">
+      <input type="checkbox" id="rTriples">
+      <span>Lone triples playable<small>three of a kind becomes its own class, compared by rank</small></span>
+    </label>
+    <label class="rule">
+      <input type="checkbox" id="rPassLocks" checked>
+      <span>Passing locks you out of the trick<small>off = a pass only skips your turn; you may play when it comes back around</small></span>
+    </label>
+    <label class="rule">
+      <input type="checkbox" id="rFlushSuit" checked>
+      <span>Flushes compare by suit first<small>any spade flush beats any heart flush; off = top ranks compare first (poker style)</small></span>
+    </label>
+    <label class="rule">
+      <input type="checkbox" id="rTiered" checked>
+      <span>Card-count multipliers<small>losers with 10&ndash;12 cards pay double, all 13 pay triple</small></span>
+    </label>
+    <label class="rule">
+      <input type="checkbox" id="rTwo">
+      <span>2-holder penalty<small>holding a 2 at game end adds the base payment again</small></span>
+    </label>
+  </div>
+
+  <button id="startBtn" class="primary">Deal cards</button>
+</div>
+
+<!-- ============ GAME ============ -->
+<div id="game">
+  <div id="topbar">
+    <span class="chip" id="chipRules"></span>
+    <span class="chip" id="chipScoring"></span>
+    <span class="spacer"></span>
+    <button id="newGameBtn">&#x21bb; New game</button>
+  </div>
+
+  <div id="board">
+    <div id="opponents"></div>
+    <div id="table">
+      <div id="tableLabel">TABLE</div>
+      <div id="tableCards"><span class="empty">fresh trick</span></div>
+    </div>
+    <div id="status"></div>
+    <div id="handArea">
+      <div id="handControls">
+        <span style="color:var(--muted);font-size:.8rem">SORT</span>
+        <div class="seg" id="sortSeg">
+          <button data-s="rank" class="on">Rank</button>
+          <button data-s="suit">Suit</button>
+        </div>
+        <span class="spacer"></span>
+        <button id="hintBtn">&#x1f4a1; Hint</button>
+        <button id="passBtn" class="warn">Pass</button>
+        <button id="playBtn" class="good">Play</button>
+      </div>
+      <div id="hand"></div>
+    </div>
+  </div>
+
+  <div id="historyPanel">
+    <h2>Action history</h2>
+    <div id="log"></div>
+  </div>
+</div>
+
+<!-- ============ GAME OVER ============ -->
+<div id="overlay">
+  <div id="overlayBox">
+    <h2 id="overTitle"></h2>
+    <div class="sub" id="overSub"></div>
+    <table id="scoreTable"></table>
+    <div class="btns">
+      <button class="primary" id="againBtn">Play again</button>
+      <button id="setupBtn">Change rules</button>
+    </div>
+  </div>
+</div>
+
+<script>
+"use strict";
+
+const RANKS = ["3","4","5","6","7","8","9","10","J","Q","K","A","2"];
+const SUITS = ["♦","♣","♥","♠"]; // diamonds clubs hearts spades
+const AI_KINDS = ["smart", "dmc", "ismcts", "decomp", "linear", "dumper", "lowest", "highest", "random"];
+const AI_LABEL = {
+  smart: "Smart (heuristic)", dmc: "DMC (trained)", ismcts: "ISMCTS (search)",
+  decomp: "Decomposition", linear: "Linear (trained)", dumper: "Dumper",
+  lowest: "Lowest card", highest: "Highest card", random: "Random",
+};
+const TYPE_LABEL = {
+  SINGLE: "Single", PAIR: "Pair", TRIPLE: "Triple", STRAIGHT: "Straight",
+  FLUSH: "Flush", FULL_HOUSE: "Full house", FOUR_OF_A_KIND: "Four of a kind",
+  STRAIGHT_FLUSH: "Straight flush",
+};
+
+const $ = (id) => document.getElementById(id);
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const rankOf = (c) => Math.floor(c / 4);
+const suitOf = (c) => c % 4;
+const cardText = (c) => RANKS[rankOf(c)] + SUITS[suitOf(c)];
+
+let S = null;            // latest authoritative server state
+let seenHistory = 0;     // history entries already shown in the log
+let selected = new Set();
+let sortMode = "rank";
+let busy = false;
+let numAi = 3;
+
+/* ---------------- setup screen ---------------- */
+
+function renderAiRows() {
+  const rows = $("aiRows");
+  rows.innerHTML = "";
+  for (let i = 1; i <= numAi; i++) {
+    const row = document.createElement("div");
+    row.className = "ai-row";
+    const label = document.createElement("label");
+    label.textContent = "AI " + i;
+    const sel = document.createElement("select");
+    sel.dataset.idx = i;
+    for (const kind of AI_KINDS) {
+      const o = document.createElement("option");
+      o.value = kind;
+      o.textContent = AI_LABEL[kind];
+      sel.appendChild(o);
+    }
+    sel.value = i === 1 ? "dmc" : "smart";
+    row.append(label, sel);
+    rows.appendChild(row);
+  }
+}
+
+$("numAiSeg").addEventListener("click", (e) => {
+  const btn = e.target.closest("button");
+  if (!btn) return;
+  numAi = +btn.dataset.n;
+  [...$("numAiSeg").children].forEach((b) => b.classList.toggle("on", b === btn));
+  renderAiRows();
+});
+
+function currentSettings() {
+  return {
+    num_ai: numAi,
+    ai: [...$("aiRows").querySelectorAll("select")].map((s) => s.value),
+    rules: {
+      allow_triples: $("rTriples").checked,
+      pass_locks: $("rPassLocks").checked,
+      flush_rank_first: !$("rFlushSuit").checked,
+    },
+    scoring: { tiered: $("rTiered").checked, two: $("rTwo").checked },
+  };
+}
+
+let lastSettings = null;
+
+async function startGame(settings) {
+  lastSettings = settings;
+  const res = await fetch("/api/new", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(settings),
+  });
+  const state = await res.json();
+  $("setup").classList.add("hidden");
+  $("game").classList.add("active");
+  $("overlay").classList.remove("active");
+  seenHistory = 0;
+  selected.clear();
+  await applyState(state);
+}
+
+$("startBtn").addEventListener("click", () => startGame(currentSettings()));
+$("againBtn").addEventListener("click", () => startGame(lastSettings));
+$("setupBtn").addEventListener("click", () => {
+  $("overlay").classList.remove("active");
+  $("game").classList.remove("active");
+  $("setup").classList.remove("hidden");
+});
+$("newGameBtn").addEventListener("click", () => {
+  $("game").classList.remove("active");
+  $("setup").classList.remove("hidden");
+});
+
+/* ---------------- rendering ---------------- */
+
+function cardEl(id, mini = false) {
+  const d = document.createElement("div");
+  d.className = `card suit-${suitOf(id)}` + (mini ? " mini" : "");
+  d.dataset.id = id;
+  const tl = document.createElement("div");
+  tl.className = "tl";
+  tl.innerHTML = RANKS[rankOf(id)] + "<small>" + SUITS[suitOf(id)] + "</small>";
+  const pip = document.createElement("div");
+  pip.className = "pip";
+  pip.textContent = SUITS[suitOf(id)];
+  d.append(tl, pip);
+  return d;
+}
+
+function sortedHand() {
+  const hand = [...S.hand];
+  if (sortMode === "suit") hand.sort((a, b) => suitOf(a) - suitOf(b) || a - b);
+  else hand.sort((a, b) => a - b);
+  return hand;
+}
+
+function renderHand() {
+  const el = $("hand");
+  el.innerHTML = "";
+  for (const c of sortedHand()) {
+    const d = cardEl(c);
+    if (selected.has(c)) d.classList.add("sel");
+    d.addEventListener("click", () => {
+      if (busy || S.phase !== "playing" || S.turn !== S.human_seat) return;
+      d.classList.remove("hinted");
+      if (selected.has(c)) { selected.delete(c); d.classList.remove("sel"); }
+      else { selected.add(c); d.classList.add("sel"); }
+      updateControls();
+    });
+    el.appendChild(d);
+  }
+}
+
+function renderOpponents(view) {
+  const el = $("opponents");
+  el.innerHTML = "";
+  for (const p of view.players) {
+    if (p.seat === S.human_seat) continue;
+    const d = document.createElement("div");
+    d.className = "opp";
+    if (!view.over && view.turn === p.seat) d.classList.add("active");
+    if (p.passed) d.classList.add("passed");
+    d.innerHTML = `
+      <div class="badge">PASSED</div>
+      <div class="name">${p.name}</div>
+      <div class="count">${p.cards}<small> cards</small></div>
+      <div class="last">${p.last || ""}</div>`;
+    el.appendChild(d);
+  }
+}
+
+function renderTable(combo, byName) {
+  const el = $("tableCards");
+  el.innerHTML = "";
+  if (!combo) {
+    el.innerHTML = '<span class="empty">fresh trick — lead anything</span>';
+    $("tableLabel").textContent = "TABLE";
+    return;
+  }
+  for (const c of combo.cards) el.appendChild(cardEl(c, true));
+  $("tableLabel").textContent =
+    (TYPE_LABEL[combo.type] || combo.type).toUpperCase() +
+    (byName ? " · " + byName : "");
+}
+
+function renderLog(upTo) {
+  const el = $("log");
+  el.innerHTML = "";
+  const entries = S.history.slice(0, upTo);
+  for (const h of entries) {
+    const row = document.createElement("div");
+    row.className = "log-entry" + (h.player === S.human_seat ? " me" : "");
+    const who = `<span class="who">${h.name}</span>`;
+    const what = h.cards
+      ? `<span class="what">${TYPE_LABEL[h.type] || h.type}</span>
+         <span class="cards suit-x">${h.cards.map(cardText).join(" ")}</span>`
+      : `<span class="what pass">passed</span>`;
+    row.innerHTML = who + what;
+    el.appendChild(row);
+    if (h.trick_end) {
+      const hr = document.createElement("div");
+      hr.className = "log-trick-end";
+      el.appendChild(hr);
+    }
+  }
+  el.scrollTop = el.scrollHeight;
+}
+
+function setStatus(html) { $("status").innerHTML = html; }
+
+function selectionCombo() {
+  if (!S || !S.legal_moves) return null;
+  const key = [...selected].sort((a, b) => a - b).join(",");
+  return S.legal_moves.find((m) => m.cards.join(",") === key) || null;
+}
+
+function updateControls() {
+  const myTurn = S.phase === "playing" && S.turn === S.human_seat && !busy;
+  const match = selectionCombo();
+  $("playBtn").disabled = !myTurn || !match;
+  $("playBtn").textContent = match
+    ? "Play " + (TYPE_LABEL[match.type] || match.type)
+    : "Play";
+  $("passBtn").disabled = !myTurn || !S.can_pass;
+  $("hintBtn").disabled = !myTurn;
+
+  if (!myTurn) return;
+  if (S.first_play) {
+    setStatus(`Your turn — first play must include <b>${cardText(S.start_card)}</b>`);
+  } else if (S.leading) {
+    setStatus("Your turn — <b>you lead</b>, play any class");
+  } else if (S.legal_moves.length === 0) {
+    setStatus(`Nothing beats the <span class="combo-name">${TYPE_LABEL[S.table.type]}</span> — you must pass`);
+  } else {
+    setStatus(`Your turn — beat the <span class="combo-name">${TYPE_LABEL[S.table.type]}</span> or pass`);
+  }
+}
+
+/* ---------------- state application with animation ---------------- */
+
+function viewFromState(state, counts, lastActions, passed) {
+  return {
+    players: state.players.map((p) => ({
+      ...p,
+      cards: counts[p.seat],
+      passed: passed[p.seat],
+      last: lastActions[p.seat] || "",
+    })),
+    turn: state.turn,
+    over: state.phase === "over",
+  };
+}
+
+async function applyState(state) {
+  busy = true;
+  const prev = S;
+  S = state;
+  $("chipRules").textContent = ruleChip(state.rules);
+  $("chipScoring").textContent = "payout: " + state.scoring;
+
+  // Reconstruct the view before the new actions, then animate through them.
+  const counts = {}, lastActions = {}, passed = {};
+  for (const p of state.players) { counts[p.seat] = p.cards; passed[p.seat] = false; }
+  const fresh = state.history.slice(seenHistory);
+  for (const h of fresh) if (h.cards) counts[h.player] += h.cards.length;
+  if (prev && prev.phase === "playing") {
+    for (const p of prev.players) passed[p.seat] = p.passed;
+  }
+
+  // Table as it was before the fresh actions:
+  let tableCombo = prev && prev.phase === "playing" ? prev.table : null;
+  let tableBy = prev && prev.phase === "playing" && prev.table_player !== null
+    ? nameOf(prev.table_player) : null;
+
+  renderHand();
+  renderOpponents(viewFromState(state, counts, lastActions, passed));
+  renderTable(tableCombo, tableBy);
+  renderLog(seenHistory);
+
+  for (let i = 0; i < fresh.length; i++) {
+    const h = fresh[i];
+    const isHuman = h.player === S.human_seat;
+    if (!isHuman) setStatus(`${h.name} ${h.cards ? "plays…" : "passes"}`);
+    if (h.cards) {
+      counts[h.player] -= h.cards.length;
+      for (const s of Object.keys(passed)) {
+        if (!S.rules.pass_locks) passed[s] = false;
+      }
+      lastActions[h.player] = (TYPE_LABEL[h.type] || h.type) + " " + h.cards.map(cardText).join(" ");
+      tableCombo = { cards: h.cards, type: h.type };
+      tableBy = h.name;
+    } else {
+      passed[h.player] = true;
+      lastActions[h.player] = "passed";
+    }
+    seenHistory++;
+    renderOpponents(viewFromState(state, counts, lastActions, passed));
+    renderTable(tableCombo, tableBy);
+    renderLog(seenHistory);
+    if (!isHuman) await sleep(h.cards ? 550 : 300);
+    if (h.trick_end && !(state.phase === "over" && i === fresh.length - 1)) {
+      await sleep(420);
+      tableCombo = null; tableBy = null;
+      for (const s of Object.keys(passed)) passed[s] = false;
+      renderTable(null, null);
+      renderOpponents(viewFromState(state, counts, lastActions, passed));
+    }
+  }
+
+  busy = false;
+  // Final authoritative render.
+  renderOpponents({ players: state.players, turn: state.turn, over: state.phase === "over" });
+  renderTable(state.table, state.table_player !== null ? nameOf(state.table_player) : null);
+  renderLog(state.history.length);
+  seenHistory = state.history.length;
+  updateControls();
+
+  if (state.phase === "over") showGameOver();
+}
+
+function nameOf(seat) {
+  const p = S.players.find((q) => q.seat === seat);
+  return p ? p.name : "?";
+}
+
+function ruleChip(r) {
+  const bits = [];
+  bits.push(r.allow_triples ? "triples on" : "no lone triples");
+  bits.push(r.pass_locks ? "pass locks" : "soft pass");
+  bits.push(r.flush_rank_first ? "flush by rank" : "flush by suit");
+  return bits.join(" · ");
+}
+
+function showGameOver() {
+  const won = S.winner === S.human_seat;
+  $("overTitle").textContent = won ? "\u{1f3c6} You win!" : nameOf(S.winner) + " wins";
+  $("overTitle").style.color = won ? "var(--accent-2)" : "var(--text)";
+  $("overSub").textContent = won
+    ? "Everyone pays you for their remaining cards."
+    : "You pay for your remaining cards.";
+  const t = $("scoreTable");
+  t.innerHTML = "<tr><th>Player</th><th>Cards left</th><th>Score</th></tr>";
+  for (const p of S.players) {
+    const sc = S.scores[String(p.seat)];
+    const row = document.createElement("tr");
+    row.innerHTML = `<td>${p.name}${p.seat === S.winner ? " \u{1f451}" : ""}</td>
+      <td>${p.cards}</td>
+      <td class="${sc >= 0 ? "pos" : "neg"}">${sc >= 0 ? "+" : ""}${sc}</td>`;
+    t.appendChild(row);
+  }
+  $("overlay").classList.add("active");
+}
+
+/* ---------------- actions ---------------- */
+
+async function post(url, body) {
+  const res = await fetch(url, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body || {}),
+  });
+  const data = await res.json();
+  if (!res.ok) { setStatus(`<span style="color:var(--danger)">${data.error}</span>`); return null; }
+  return data;
+}
+
+$("playBtn").addEventListener("click", async () => {
+  if (busy) return;
+  const match = selectionCombo();
+  if (!match) return;
+  const state = await post("/api/play", { cards: [...selected] });
+  if (state) { selected.clear(); await applyState(state); }
+});
+
+$("passBtn").addEventListener("click", async () => {
+  if (busy) return;
+  const state = await post("/api/pass");
+  if (state) { selected.clear(); await applyState(state); }
+});
+
+$("hintBtn").addEventListener("click", async () => {
+  if (busy) return;
+  const res = await fetch("/api/hint");
+  if (!res.ok) return;
+  const hintData = await res.json();
+  selected.clear();
+  if (hintData.cards) for (const c of hintData.cards) selected.add(c);
+  renderHand();
+  if (!hintData.cards) {
+    setStatus("Hint: <b>pass</b> and save your hand");
+  } else {
+    setStatus(`Hint: play <span class="combo-name">${TYPE_LABEL[hintData.type] || hintData.type}</span>`);
+    for (const el of $("hand").children) {
+      if (selected.has(+el.dataset.id)) el.classList.add("hinted");
+    }
+  }
+  updateControls();
+});
+
+$("sortSeg").addEventListener("click", (e) => {
+  const btn = e.target.closest("button");
+  if (!btn) return;
+  sortMode = btn.dataset.s;
+  [...$("sortSeg").children].forEach((b) => b.classList.toggle("on", b === btn));
+  if (S) renderHand();
+});
+
+renderAiRows();
+</script>
+</body>
+</html>

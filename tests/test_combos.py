@@ -2,6 +2,7 @@ import unittest
 
 from big2.cards import parse_card
 from big2.combos import ComboType, beats, classify, generate_moves
+from big2.rules import RuleConfig
 
 
 def cards(*names):
@@ -93,6 +94,49 @@ class TestComparisons(unittest.TestCase):
         self.assertFalse(beats(combo("2s"), combo("3d", "3c")))
         self.assertFalse(
             beats(combo("4d", "4c", "4h", "4s", "5d"), combo("2s"))
+        )
+
+
+class TestRuleVariants(unittest.TestCase):
+    TRIPLES = RuleConfig(allow_triples=True)
+
+    def test_lone_triples_when_enabled(self):
+        triple = classify(cards("9d", "9c", "9h"), self.TRIPLES)
+        self.assertIsNotNone(triple)
+        self.assertEqual(triple.type, ComboType.TRIPLE)
+        self.assertIsNone(classify(cards("9d", "9c", "8h"), self.TRIPLES))
+        self.assertIsNone(classify(cards("9d", "9c", "9h")))  # default rules
+
+    def test_triple_comparison_and_isolation(self):
+        low = classify(cards("9d", "9c", "9h"), self.TRIPLES)
+        high = classify(cards("Kd", "Kc", "Ks"), self.TRIPLES)
+        self.assertTrue(beats(high, low))
+        self.assertFalse(beats(low, high))
+        # triples never cross size classes
+        self.assertFalse(beats(high, combo("2s", "2h")))
+
+    def test_triple_move_generation(self):
+        hand = cards("9d", "9c", "9h", "9s", "Kd")
+        default_moves = generate_moves(hand)
+        self.assertFalse(any(len(m) == 3 for m in default_moves))
+        triple_moves = [
+            m for m in generate_moves(hand, rules=self.TRIPLES) if len(m) == 3
+        ]
+        self.assertEqual(len(triple_moves), 4)  # C(4,3) ways to pick the 9s
+        table = classify(cards("8d", "8c", "8h"), self.TRIPLES)
+        beating = generate_moves(hand, table, self.TRIPLES)
+        self.assertTrue(all(len(m) == 3 for m in beating))
+        self.assertEqual(len(beating), 4)
+
+    def test_flush_rank_first_variant(self):
+        rank_first = RuleConfig(flush_rank_first=True)
+        club_ace = cards("3c", "5c", "9c", "Kc", "Ac")
+        heart_jack = cards("4h", "6h", "8h", "10h", "Jh")
+        # house rule: suit dominates
+        self.assertTrue(beats(classify(heart_jack), classify(club_ace)))
+        # variant: rank dominates
+        self.assertTrue(
+            beats(classify(club_ace, rank_first), classify(heart_jack, rank_first))
         )
 
 

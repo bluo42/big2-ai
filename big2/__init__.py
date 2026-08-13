@@ -13,6 +13,7 @@ Rules implemented (see README.md for details):
 from big2.cards import Card, card_name, hand_to_str
 from big2.combos import Combo, ComboType, classify, beats, generate_moves
 from big2.game import Big2Game, ScoringConfig
+from big2.rules import RuleConfig
 
 __all__ = [
     "Card",
@@ -25,4 +26,5 @@ __all__ = [
     "generate_moves",
     "Big2Game",
     "ScoringConfig",
+    "RuleConfig",
 ]

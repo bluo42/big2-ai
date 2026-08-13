@@ -61,7 +61,7 @@ def move_features(game: Big2Game, player: int, move: Optional[Combo],
     f = np.zeros(NUM_FEATURES, dtype=np.float64)
     hand_n = len(game.hands[player])
     opp_min = min(
-        len(game.hands[p]) for p in range(NUM_PLAYERS) if p != player
+        len(game.hands[p]) for p in range(game.num_players) if p != player
     )
     danger = 1.0 if opp_min <= 2 else 0.0
     endgame = 1.0 if hand_n <= 6 else 0.0

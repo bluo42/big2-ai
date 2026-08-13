@@ -35,6 +35,7 @@ from gymnasium import spaces
 from big2.cards import NUM_CARDS, Card
 from big2.combos import Combo, ComboType
 from big2.game import CARDS_PER_PLAYER, NUM_PLAYERS, Big2Game, ScoringConfig
+from big2.rules import RuleConfig
 from big2.strategies import PlayLowest, Strategy
 
 # Generous upper bound on simultaneous legal moves (flush-heavy hands can
@@ -60,6 +61,7 @@ class Big2Env(gym.Env):
         self,
         opponents: Optional[Sequence[Strategy]] = None,
         scoring: Optional[ScoringConfig] = None,
+        rules: Optional["RuleConfig"] = None,
         agent_seat: Optional[int] = None,
         invalid_action: str = "error",  # or "fallback"
         seed: Optional[int] = None,
@@ -71,10 +73,14 @@ class Big2Env(gym.Env):
         if len(self.opponent_pool) != NUM_PLAYERS - 1:
             raise ValueError(f"need exactly {NUM_PLAYERS - 1} opponents")
         self.scoring = scoring or ScoringConfig()
+        self.rules = rules
         self.fixed_agent_seat = agent_seat
         self.invalid_action = invalid_action
         self.rng = random.Random(seed)
-        self.game = Big2Game(scoring=self.scoring, rng=random.Random(self.rng.random()))
+        self.game = Big2Game(
+            scoring=self.scoring, rules=self.rules,
+            rng=random.Random(self.rng.random()),
+        )
 
         self.action_space = spaces.Discrete(MAX_ACTIONS)
         self.observation_space = spaces.Dict(

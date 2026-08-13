@@ -4,9 +4,9 @@ Runs 4-seat tournaments where the given strategies rotate seats every
 game (removing positional bias), for each scoring configuration:
 
     plain        no modifiers, pay cards-remaining
-    two          holding a 2 doubles the payment
-    big          holding >= 10 cards doubles the payment
-    two+big      both modifiers (stacking to 3x)
+    tiered       house rule: 10-12 cards pay double, all 13 pay triple
+    two          legacy: holding a 2 doubles the payment
+    tiered+two   tiered multipliers plus the 2-holder rule
 
 Examples:
     python -m big2.experiments --games 2000
@@ -32,10 +32,16 @@ from big2.strategies import (
 )
 
 SCORING_VARIANTS: Dict[str, ScoringConfig] = {
-    "plain": ScoringConfig(two_modifier=False, big_hand_modifier=False),
-    "two": ScoringConfig(two_modifier=True, big_hand_modifier=False),
-    "big": ScoringConfig(two_modifier=False, big_hand_modifier=True),
-    "two+big": ScoringConfig(two_modifier=True, big_hand_modifier=True),
+    # no modifiers: pay cards-remaining flat
+    "plain": ScoringConfig(big_hand_double=False, full_hand_triple=False),
+    # house rule: 10-12 cards pay double, 13 pays triple
+    "tiered": ScoringConfig(),
+    # legacy 2-holder rule on its own
+    "two": ScoringConfig(
+        big_hand_double=False, full_hand_triple=False, two_modifier=True
+    ),
+    # tiered card-count multipliers plus the 2-holder rule
+    "tiered+two": ScoringConfig(two_modifier=True),
 }
 
 
@@ -51,6 +57,22 @@ def make_strategy(name: str, seed: Optional[int] = None) -> Strategy:
         return FiveCardDumper()
     if name == "smart":
         return SmartHeuristic()
+    if name == "decomp":
+        from big2.decomposition import DecompositionStrategy
+
+        return DecompositionStrategy()
+    if name == "ismcts":
+        from big2.ismcts import ISMCTSStrategy
+
+        return ISMCTSStrategy(n_sims=100, seed=seed)
+    if name == "linear":
+        from big2.rl import LinearPolicy
+
+        return LinearPolicy.load("big2/policies/linear_cem.npz")
+    if name == "dmc":
+        from big2.dmc import DMCPolicy
+
+        return DMCPolicy.load("big2/policies/dmc_linear.npz")
     raise ValueError(f"unknown strategy {name!r}")
 
 
@@ -108,7 +130,10 @@ def main() -> None:
         "--strategies",
         nargs=4,
         default=["lowest", "highest", "dumper", "smart"],
-        help="four of: random lowest highest dumper smart",
+        help=(
+            "four of: random lowest highest dumper smart decomp ismcts "
+            "linear dmc (ismcts is ~100x slower than the scripted ones)"
+        ),
     )
     parser.add_argument(
         "--variants", nargs="*", default=list(SCORING_VARIANTS),
