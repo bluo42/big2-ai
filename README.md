@@ -133,7 +133,27 @@ whether the move breaks a hand unit, whether it spends a 2, danger/endgame
 flags, ...) picks the argmax-scoring legal option each turn. Weights are
 trained with the **cross-entropy method** against fixed opponents
 (`lowest` / `dumper` / `smart`), with common random numbers across each
-population. Trained weights live in `big2/policies/linear_cem.npz`.
+population. Trained weights live in `big2/policies/linear_cem.npz`
+(25 iterations, population 32, 48 games/eval, seed 3).
+
+The trained policy beats every baseline in every scoring variant
+(1000 games/variant, seats rotated, seed 1):
+
+```
+   variant |             lowest |             dumper |              smart |             linear
+----------------------------------------------------------------------------------------------
+     plain |       -3.09 ( 11%) |       +0.08 ( 23%) |       +0.33 ( 29%) |       +2.68 ( 37%)
+       two |       -3.62 ( 11%) |       +0.00 ( 23%) |       +0.47 ( 29%) |       +3.15 ( 37%)
+       big |       -3.47 ( 11%) |       +0.16 ( 23%) |       +0.20 ( 29%) |       +3.11 ( 37%)
+   two+big |       -4.00 ( 11%) |       +0.09 ( 23%) |       +0.33 ( 29%) |       +3.58 ( 37%)
+```
+
+The learned weights are interpretable and match Big-2 intuition: prefer
+playing over passing (`is_pass` −1.7, even more in the endgame), shed the
+biggest class you can (`size5` +2.7 > `size2` +2.1 > `size1` +1.1) but with
+the *lowest* cards that work (`top_card_norm` −1.5), don't break hand units
+(−1.3), hold 2s and aces back (−0.3 / −0.5), and always take a move that
+empties your hand (`goes_out` +2.3).
 
 ## Roadmap toward optimal play
 
