@@ -323,12 +323,25 @@ def run_league(
         league.add(f"cem-g{g + 1}", LinearPolicy(cem_weights.copy()), "checkpoint")
         league.prune_checkpoints()
 
+    # Final standings decide the champions, so give them extra games.
     league.reset_ratings()
-    league.play_matches(games_per_gen)
+    league.play_matches(games_per_gen * 2)
     if verbose:
         print("\n=== final standings ===")
         print(league.table())
     return league
+
+
+def best_of_lineage(league: League, prefix: str) -> Member:
+    """Best-rated member of a trainable lineage (live agent or any of its
+    frozen checkpoints) by final-standings rating.  Saving the *best*
+    rather than the *last* matters: training against a shifting field is
+    non-stationary and the live agent can end below its own checkpoint."""
+    candidates = [
+        m for m in league.population
+        if m.name == prefix or m.name.startswith(prefix + "-g")
+    ]
+    return max(candidates, key=lambda m: m.rating)
 
 
 def main() -> None:
@@ -354,10 +367,14 @@ def main() -> None:
         seed=args.seed,
         warm_start_cem=args.cem_out,
     )
-    by_name = {m.name: m for m in league.population}
-    by_name["dmc"].strategy.save(args.dmc_out)
-    by_name["cem"].strategy.save(args.cem_out)
-    print(f"\nsaved league champions to {args.dmc_out} and {args.cem_out}")
+    dmc_champ = best_of_lineage(league, "dmc")
+    cem_champ = best_of_lineage(league, "cem")
+    dmc_champ.strategy.save(args.dmc_out)
+    cem_champ.strategy.save(args.cem_out)
+    print(
+        f"\nsaved champions: {dmc_champ.name} ({dmc_champ.rating:+.2f}) -> "
+        f"{args.dmc_out}, {cem_champ.name} ({cem_champ.rating:+.2f}) -> {args.cem_out}"
+    )
 
 
 if __name__ == "__main__":
