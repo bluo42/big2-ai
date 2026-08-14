@@ -12,18 +12,20 @@ big2/
   combos.py         hand classification, comparison, legal-move generation
   rules.py          house-rule variants (small, deliberate variant space)
   game.py           2-4 player engine: tricks, passing, scoring, clone()
-  env.py            Gymnasium env (action-masked Discrete space)
+  beliefs.py        opponent-hand probabilities: analytic + Monte-Carlo layers
+  env.py            Gymnasium env (action-masked, belief-augmented obs)
   strategies.py     scripted baselines
   decomposition.py  exact minimum-plays hand decomposition + strategy
-  ismcts.py         determinized ISMCTS reference opponent (no learning)
+  ismcts.py         determinized ISMCTS (optionally belief-weighted worlds)
   rl.py             linear move-scorer trained with cross-entropy method
-  dmc.py            DouZero-style DMC: Q(s, a) over encoded actions
+  dmc.py            DouZero-style DMC: Q(s, a) over encoded actions + beliefs
+  league.py         population training: trainables vs the field, not benchmarks
   experiments.py    seat-rotated tournaments across scoring variants
   server.py         Flask backend for the web UI
   static/           the UI (self-contained HTML/JS/CSS)
   policies/         trained weights (committed)
 docs/EXPERIMENTS.md experiment methodology & research roadmap
-tests/              46 unit tests
+tests/              57 unit tests
 ```
 
 ## Play it
@@ -42,6 +44,10 @@ python -m big2.server          # then open http://127.0.0.1:8080
 - In game: click cards to select (the Play button labels the combo it
   forms), **sort by rank or suit**, follow the **action history** panel,
   and ask for a **hint** from the trained policy.
+- Toggle **🧠 Beliefs** to see, per opponent, live probabilities of
+  holding a 2 / an ace / a pair / a triple, the chance they can beat
+  what's on the table, and a 13-rank heat strip — sharpening to
+  certainty ("hand known") as the endgame eliminates possibilities.
 
 ## Rules implemented
 
@@ -69,6 +75,36 @@ python -m big2.server          # then open http://127.0.0.1:8080
 | `ScoringConfig.big_hand_double/full_hand_triple` | on | tiered card-count multipliers |
 | `ScoringConfig.two_modifier` | off | legacy: holding a 2 at game end adds the base payment again |
 
+## Beliefs: probability maps of hidden hands
+
+Big 2 deals the whole deck, so from any seat the hidden state is just an
+assignment of the unseen cards to known opponent hand counts.
+`big2/beliefs.py` exploits that with two layers:
+
+- **Analytic (exact)** — hypergeometric marginals for the per-card and
+  per-rank probability maps, "holds a 2 / an ace", and "holds a single
+  beating this card"; these sharpen automatically as cards get played,
+  and collapse to certainty in the endgame (`known_hand`).
+- **Monte-Carlo with pass evidence** — sampled worlds, down-weighted
+  when an observed pass looks dishonest in that world (`pass_honesty`),
+  give whole-hand events: has a pair / triple / bomb, can beat this
+  combo.
+
+Beliefs feed the DMC action encoding (P(opponent beats this move),
+P(holds a 2)), the Gym observation (per-rank belief maps), optional
+belief-weighted determinization in ISMCTS, and the UI belief panel.
+
+## League training: candidates vs the field
+
+`python -m big2.league` replaces benchmark training: a population of
+scripted anchors, trainable agents (CEM + DMC), and frozen checkpoints
+of past generations plays rated matches; each generation the DMC trains
+with opponents *sampled from the field per episode*, CEM candidates are
+scored against sampled lineups, and frozen copies of both join the
+population. League champions are saved over the standard policy files.
+See `docs/EXPERIMENTS.md` for what separates this from full PSRO
+(exploiters + meta-solver) and the plan to get there.
+
 ## The agent ladder
 
 Following the Dou Dizhu lineage (DouZero → PerfectDou) rather than poker —
@@ -81,15 +117,21 @@ see `docs/EXPERIMENTS.md` for the full methodology and roadmap.
    branch-and-bound, <1 ms typical) used as a baseline, a feature, and an
    endgame oracle.
 3. ✅ *ISMCTS* — root-determinized search over sampled opponent hands with
-   UCB rollout allocation. Strongest no-training opponent.
+   UCB rollout allocation; optional belief-posterior determinization.
+   Strongest no-training opponent.
 4. ✅ *DMC with action encoding* — DouZero's trick: encode each candidate
-   move as input (52-bit mask + metadata) and regress Q(s, a) on final
-   Monte-Carlo returns from shared-weights self-play. Linear/numpy here;
-   torch MLP is the designated upgrade.
-5. ⬜ PPO + set-attention head + perfect-info critic + belief auxiliary.
-6. ⬜ League/PSRO population (proxy exploitability via best-response).
-7. ⬜ Search at inference (policy prior + value + belief particles).
-8. ⬜ Runtime opponent adaptation with bounded deviation.
+   move as input (52-bit mask + metadata + belief features) and regress
+   Q(s, a) on final Monte-Carlo returns. Linear/numpy here; torch MLP is
+   the designated upgrade.
+5. ➖ PPO + set-attention head + perfect-info critic + belief auxiliary —
+   the exact belief module is the groundwork; the learned head comes next.
+6. ➖ League/PSRO population — `league.py` is the first rung (population
+   sampling + frozen checkpoints); exploiters and a meta-solver remain.
+7. ⬜ Search at inference (policy prior + value + belief particles —
+   `BeliefState.sample_worlds` already provides the particles).
+8. ➖ Runtime opponent adaptation — pass-honesty weighting is a fixed
+   primitive opponent model; learned/adaptive models with bounded
+   deviation remain.
 
 There is also `linear` — a CEM-trained move scorer over hand-crafted
 features (`big2/rl.py`) that predates the ladder and remains a strong

@@ -26,6 +26,7 @@ from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 
+from big2.beliefs import BeliefState
 from big2.cards import NUM_CARDS
 from big2.combos import Combo, ComboType
 from big2.game import CARDS_PER_PLAYER, NUM_PLAYERS, Big2Game, ScoringConfig
@@ -38,10 +39,25 @@ N_TYPES = len(ComboType) + 1  # + "none" slot for an empty table
 
 # Layout: hand(52) action(52) is_pass(1) table(52) table_type(N) played(52)
 #         opp_counts(3) opp_passed(3) leading(1) left_after(1) size(1) bias(1)
-DIM = 52 + 52 + 1 + 52 + N_TYPES + 52 + 3 + 3 + 1 + 1 + 1 + 1
+BASE_DIM = 52 + 52 + 1 + 52 + N_TYPES + 52 + 3 + 3 + 1 + 1 + 1 + 1
+# Belief block (encoding v2): per opponent [P(beats ref card), P(holds a 2)]
+# for up to 3 opponents, then [frac of unseen above ref, unseen/39].
+BELIEF_DIM = 3 * 2 + 2
+DIM = BASE_DIM + BELIEF_DIM
+ENCODING_VERSION = 2
 
 
-def encode(game: Big2Game, player: int, move: Optional[Combo]) -> np.ndarray:
+def encode(
+    game: Big2Game,
+    player: int,
+    move: Optional[Combo],
+    belief: Optional[BeliefState] = None,
+) -> np.ndarray:
+    """Feature vector for Q(s, a).  Pass one BeliefState per decision —
+    it depends only on the state, and building it per candidate move
+    would triple the encoding cost."""
+    if belief is None:
+        belief = BeliefState(game, player)
     x = np.zeros(DIM, dtype=np.float32)
     o = 0
     hand = game.hands[player]
@@ -79,6 +95,26 @@ def encode(game: Big2Game, player: int, move: Optional[Combo]) -> np.ndarray:
     x[o] = n / 5.0
     o += 1
     x[o] = 1.0
+    o += 1
+
+    # Belief block: how contestable is this move?  Reference card is the
+    # move's top card (for a pass: the card currently to beat).
+    if move is not None:
+        ref = max(move.cards)
+    elif game.table_combo is not None:
+        ref = max(game.table_combo.cards)
+    else:
+        ref = -1
+    for j, p in enumerate(others[:3]):
+        if ref >= 0:
+            x[o + 2 * j] = belief.prob_beats_single(p, ref)
+        x[o + 2 * j + 1] = belief.prob_holds_two(p)
+    o += 6
+    u = belief.n_unseen
+    if ref >= 0 and u:
+        x[o] = sum(1 for c in belief.unseen if c > ref) / u
+    o += 1
+    x[o] = u / 39.0
     return x
 
 
@@ -104,15 +140,24 @@ class DMCPolicy(Strategy):
         options = self._options(game, player)
         if len(options) == 1:
             return options[0]
-        feats = np.stack([encode(game, player, m) for m in options])
+        belief = BeliefState(game, player)
+        feats = np.stack([encode(game, player, m, belief) for m in options])
         return options[int(np.argmax(feats @ self.weights))]
 
     def save(self, path: str) -> None:
-        np.savez(path, weights=self.weights)
+        np.savez(path, weights=self.weights, version=ENCODING_VERSION)
 
     @classmethod
     def load(cls, path: str) -> "DMCPolicy":
-        return cls(np.load(path)["weights"])
+        data = np.load(path)
+        weights = data["weights"]
+        if weights.shape != (DIM,):
+            raise ValueError(
+                f"{path} has {weights.shape[0]}-dim weights but the current "
+                f"encoding (v{ENCODING_VERSION}) is {DIM}-dim — retrain with "
+                f"python -m big2.dmc"
+            )
+        return cls(weights)
 
 
 def train_dmc(
@@ -148,13 +193,14 @@ def train_dmc(
         while not game.game_over:
             p = game.turn
             options = policy._options(game, p)
+            belief = BeliefState(game, p)
             if len(options) == 1:
-                choice, feat = options[0], encode(game, p, options[0])
+                choice, feat = options[0], encode(game, p, options[0], belief)
             elif rng.random() < eps:
                 choice = options[rng.randrange(len(options))]
-                feat = encode(game, p, choice)
+                feat = encode(game, p, choice, belief)
             else:
-                feats = np.stack([encode(game, p, m) for m in options])
+                feats = np.stack([encode(game, p, m, belief) for m in options])
                 idx = int(np.argmax(feats @ w))
                 choice, feat = options[idx], feats[idx]
             trajectories[p].append(feat)

@@ -22,9 +22,10 @@ from __future__ import annotations
 
 import math
 import random
-from typing import List, Optional
+from typing import Dict, List, Optional, Tuple
 
-from big2.cards import NUM_CARDS
+from big2.beliefs import BeliefState
+from big2.cards import Card, NUM_CARDS
 from big2.combos import Combo
 from big2.game import Big2Game
 from big2.strategies import PlayLowest, Strategy
@@ -34,6 +35,11 @@ SCORE_SCALE = 39.0
 
 
 class ISMCTSStrategy(Strategy):
+    """Root-determinized search.  With ``pass_honesty`` set (< 1.0),
+    determinizations are drawn from the belief posterior — worlds where
+    an observed pass looks dishonest are down-weighted — instead of
+    uniformly from the unseen pool."""
+
     name = "ismcts"
 
     def __init__(
@@ -42,28 +48,53 @@ class ISMCTSStrategy(Strategy):
         exploration: float = 1.2,
         rollout: Optional[Strategy] = None,
         seed: Optional[int] = None,
+        pass_honesty: Optional[float] = None,
     ):
         self.n_sims = n_sims
         self.exploration = exploration
         self.rollout = rollout or PlayLowest()
         self.rng = random.Random(seed)
+        self.pass_honesty = pass_honesty
 
     # ------------------------------------------------------------------
 
+    def _apply_world(
+        self, game: Big2Game, player: int, hands: Dict[int, List[Card]]
+    ) -> Big2Game:
+        world = game.clone(rng=random.Random(self.rng.randrange(2**31)))
+        for p, hand in hands.items():
+            world.hands[p] = list(hand)
+        return world
+
     def _determinize(self, game: Big2Game, player: int) -> Big2Game:
         """Clone the game with opponents' hands redealt from unseen cards."""
-        world = game.clone(rng=random.Random(self.rng.randrange(2**31)))
         seen = set(game.hands[player]) | set(game.played_cards)
         pool = [c for c in range(NUM_CARDS) if c not in seen]
         self.rng.shuffle(pool)
-        i = 0
+        hands, i = {}, 0
         for p in range(game.num_players):
             if p == player:
                 continue
             n = len(game.hands[p])
-            world.hands[p] = sorted(pool[i : i + n])
+            hands[p] = sorted(pool[i : i + n])
             i += n
-        return world
+        return self._apply_world(game, player, hands)
+
+    def _belief_worlds(
+        self, game: Big2Game, player: int
+    ) -> List[Dict[int, List[Card]]]:
+        """Pre-sample a posterior-weighted pool of worlds for this turn."""
+        belief = BeliefState(
+            game, player, pass_honesty=self.pass_honesty,
+            rng=random.Random(self.rng.randrange(2**31)),
+        )
+        worlds = belief.sample_worlds(max(64, self.n_sims))
+        weights = [w for _, w in worlds]
+        if sum(weights) <= 0:
+            weights = [1.0] * len(worlds)
+        return self.rng.choices(
+            [hands for hands, _ in worlds], weights=weights, k=self.n_sims
+        )
 
     def _rollout(self, world: Big2Game, player: int) -> float:
         steps = 0
@@ -82,6 +113,11 @@ class ISMCTSStrategy(Strategy):
         if len(options) == 1:
             return options[0]
 
+        belief_pool = (
+            self._belief_worlds(game, player)
+            if self.pass_honesty is not None and self.pass_honesty < 1.0
+            else None
+        )
         counts = [0] * len(options)
         sums = [0.0] * len(options)
         for t in range(self.n_sims):
@@ -94,7 +130,10 @@ class ISMCTSStrategy(Strategy):
                     key=lambda i: sums[i] / counts[i]
                     + self.exploration * math.sqrt(log_t / counts[i]),
                 )
-            world = self._determinize(game, player)
+            if belief_pool is not None:
+                world = self._apply_world(game, player, belief_pool[t])
+            else:
+                world = self._determinize(game, player)
             world.step(options[idx])
             reward = (
                 world.scores[player] / SCORE_SCALE

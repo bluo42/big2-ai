@@ -98,6 +98,15 @@
   }
   .opp.passed .badge { display: block; }
   .opp .last { font-size: .7rem; color: var(--muted); min-height: 1em; }
+  .opp .beliefs { margin-top: 7px; border-top: 1px dashed var(--line); padding-top: 6px; }
+  .opp .bchips { font-size: .66rem; color: var(--muted); line-height: 1.5; }
+  .opp .bchips b { color: var(--text); font-weight: 600; }
+  .opp .bknown { font-size: .66rem; color: var(--accent-2); }
+  .opp .bstrip { display: flex; gap: 2px; margin-top: 4px; justify-content: center; }
+  .opp .bstrip span {
+    width: 10px; height: 10px; border-radius: 2px; background: var(--panel-2);
+    font-size: .5rem; color: transparent;
+  }
 
   #table {
     background: linear-gradient(160deg, #17301f, #122718);
@@ -237,6 +246,7 @@
     <span class="chip" id="chipRules"></span>
     <span class="chip" id="chipScoring"></span>
     <span class="spacer"></span>
+    <button id="beliefBtn">&#x1f9e0; Beliefs</button>
     <button id="newGameBtn">&#x21bb; New game</button>
   </div>
 
@@ -434,6 +444,7 @@ function renderOpponents(view) {
     if (p.seat === S.human_seat) continue;
     const d = document.createElement("div");
     d.className = "opp";
+    d.dataset.seat = p.seat;
     if (!view.over && view.turn === p.seat) d.classList.add("active");
     if (p.passed) d.classList.add("passed");
     d.innerHTML = `
@@ -443,7 +454,62 @@ function renderOpponents(view) {
       <div class="last">${p.last || ""}</div>`;
     el.appendChild(d);
   }
+  renderBeliefs();
 }
+
+/* ---------------- beliefs ---------------- */
+
+let beliefsOn = false;
+let B = null; // latest /api/beliefs payload
+
+const pct = (x) => Math.round(x * 100) + "%";
+
+function renderBeliefs() {
+  for (const opp of document.querySelectorAll(".opp")) {
+    const old = opp.querySelector(".beliefs");
+    if (old) old.remove();
+    if (!beliefsOn || !B || !B.opponents[opp.dataset.seat]) continue;
+    const b = B.opponents[opp.dataset.seat];
+    const box = document.createElement("div");
+    box.className = "beliefs";
+    if (b.known_hand) {
+      box.innerHTML = `<div class="bknown">hand known: ${b.known_hand.map(cardText).join(" ")}</div>`;
+    } else {
+      const beat = b.beat_table === null ? "" :
+        ` &middot; beats table <b>${pct(b.beat_table)}</b>`;
+      box.innerHTML = `<div class="bchips">
+        2 <b>${pct(b.two)}</b> &middot; A <b>${pct(b.ace)}</b> &middot;
+        pair <b>${pct(b.pair)}</b> &middot; triple <b>${pct(b.triple)}</b>${beat}
+      </div>`;
+      const strip = document.createElement("div");
+      strip.className = "bstrip";
+      b.rank_map.forEach((prob, r) => {
+        const cell = document.createElement("span");
+        cell.style.background = `rgba(79, 140, 255, ${(0.08 + 0.92 * prob).toFixed(2)})`;
+        cell.title = `${RANKS[r]}: ${pct(prob)}`;
+        strip.appendChild(cell);
+      });
+      box.appendChild(strip);
+    }
+    opp.appendChild(box);
+  }
+}
+
+async function refreshBeliefs() {
+  if (!beliefsOn || !S || S.phase !== "playing") { B = null; renderBeliefs(); return; }
+  try {
+    const res = await fetch("/api/beliefs");
+    B = res.ok ? await res.json() : null;
+  } catch { B = null; }
+  renderBeliefs();
+}
+
+$("beliefBtn").addEventListener("click", () => {
+  beliefsOn = !beliefsOn;
+  $("beliefBtn").style.borderColor = beliefsOn ? "var(--accent)" : "";
+  $("beliefBtn").style.color = beliefsOn ? "var(--accent)" : "";
+  refreshBeliefs();
+});
 
 function renderTable(combo, byName) {
   const el = $("tableCards");
@@ -590,6 +656,7 @@ async function applyState(state) {
   renderLog(state.history.length);
   seenHistory = state.history.length;
   updateControls();
+  refreshBeliefs();
 
   if (state.phase === "over") showGameOver();
 }

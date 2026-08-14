@@ -226,6 +226,34 @@ def pass_turn():
     return jsonify(state_payload())
 
 
+@app.route("/api/beliefs")
+def beliefs():
+    """Probability panel: what the human can infer about each opponent."""
+    game: Optional[Big2Game] = SESSION.get("game")
+    if game is None or game.game_over:
+        return jsonify({"error": "no game"}), 400
+    from big2.beliefs import BeliefState
+
+    b = BeliefState(game, HUMAN, pass_honesty=0.35, rng=random.Random(0))
+    classes = b.class_probabilities(k=150)
+    beat = b.prob_can_beat(game.table_combo, k=150) if game.table_combo else None
+    rank_map = b.rank_probability_map()
+    out = {}
+    for p in b.opponents:
+        known = b.known_hand(p)
+        out[str(p)] = {
+            "name": SESSION["names"][p],
+            "two": b.prob_holds_two(p),
+            "ace": b.prob_holds_ace(p),
+            "pair": classes[p]["pair"],
+            "triple": classes[p]["triple"],
+            "beat_table": None if beat is None else beat[p],
+            "rank_map": rank_map[p],
+            "known_hand": known,
+        }
+    return jsonify({"unseen": b.n_unseen, "opponents": out})
+
+
 @app.route("/api/hint")
 def hint():
     game: Optional[Big2Game] = SESSION.get("game")

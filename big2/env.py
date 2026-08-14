@@ -32,7 +32,8 @@ import gymnasium as gym
 import numpy as np
 from gymnasium import spaces
 
-from big2.cards import NUM_CARDS, Card
+from big2.beliefs import BeliefState
+from big2.cards import NUM_CARDS, NUM_RANKS, Card
 from big2.combos import Combo, ComboType
 from big2.game import CARDS_PER_PLAYER, NUM_PLAYERS, Big2Game, ScoringConfig
 from big2.rules import RuleConfig
@@ -51,6 +52,10 @@ OBS_SIZE = (
     + (NUM_PLAYERS - 1)  # opponent passed flags
     + NUM_PLAYERS  # who owns the table combo, relative one-hot (+none)
     + 1  # am I leading
+    # analytic belief block, per opponent in seat order after me:
+    + (NUM_PLAYERS - 1)  # P(holds a 2)
+    + (NUM_PLAYERS - 1)  # P(holds a single beating the table's top card)
+    + (NUM_PLAYERS - 1) * NUM_RANKS  # P(holds >= 1 of each rank)
 )
 
 
@@ -199,6 +204,21 @@ class Big2Env(gym.Env):
         i += NUM_PLAYERS
 
         vec[i] = 1.0 if g.leading else 0.0
+        i += 1
+
+        belief = BeliefState(g, me)
+        table_top = max(g.table_combo.cards) if g.table_combo else None
+        rank_map = belief.rank_probability_map()
+        for j, p in enumerate(others):
+            vec[i + j] = belief.prob_holds_two(p)
+        i += NUM_PLAYERS - 1
+        for j, p in enumerate(others):
+            if table_top is not None:
+                vec[i + j] = belief.prob_beats_single(p, table_top)
+        i += NUM_PLAYERS - 1
+        for j, p in enumerate(others):
+            for r, prob in enumerate(rank_map[p]):
+                vec[i + j * NUM_RANKS + r] = prob
 
         return {"obs": vec, "action_mask": self.action_masks()}
 

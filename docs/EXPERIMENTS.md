@@ -87,12 +87,12 @@ contributor can pick them up directly.
 |---|------|--------|
 | 1 | Fast vectorized env (bitboards) | ➖ partial: profiled pure-Python engine (~65 µs/step, ~10⁴ games/min) is enough through step 4; bitboard rewrite deferred until deep self-play needs 10⁶+ games |
 | 2 | Scripted baselines: greedy-lowest → decomposition-optimal | ✅ `strategies.py`, `decomposition.py` |
-| 3 | ISMCTS, no learning | ✅ `ismcts.py` (root-determinized) |
-| 4 | DMC with action encoding | ✅ `dmc.py` (linear estimator; torch MLP is the designated upgrade) |
-| 5 | PPO + set-attention head + perfect-info critic + belief auxiliary | ⬜ planned |
-| 6 | League / PSRO population | ⬜ planned |
-| 7 | Search at inference (policy prior + value + belief particles) | ⬜ planned |
-| 8 | Runtime opponent adaptation, bounded deviation | ⬜ planned |
+| 3 | ISMCTS, no learning | ✅ `ismcts.py` (root-determinized; optional belief-posterior determinization) |
+| 4 | DMC with action encoding | ✅ `dmc.py` (linear estimator + belief features; torch MLP is the designated upgrade) |
+| 5 | PPO + set-attention head + perfect-info critic + belief auxiliary | ➖ groundwork: exact belief module (`beliefs.py`) feeds features today; the *learned* belief head replaces/augments it |
+| 6 | League / PSRO population | ➖ first rung: `league.py` (population sampling + frozen checkpoints); exploiters + meta-solver missing |
+| 7 | Search at inference (policy prior + value + belief particles) | ⬜ planned (belief particles exist — `BeliefState.sample_worlds`) |
+| 8 | Runtime opponent adaptation, bounded deviation | ➖ primitive: pass-honesty likelihood weighting is a fixed opponent model; learned/adaptive models planned |
 
 **Step 2 — decomposition-optimal.** Minimum-plays hand decomposition is
 a solvable subproblem: memoized branch-and-bound over partitions,
@@ -124,6 +124,51 @@ Our implementation is linear (numpy, minutes on CPU); swapping the
 estimator for a small MLP in torch — keeping the encoding — is the
 next increment, followed by parallel actors (DouZero used 45 actors on
 a single machine).
+
+### Beliefs: exploiting the known deck (`big2/beliefs.py`)
+
+Because the whole deck is visible-or-held, the hidden state from any
+viewpoint is an assignment of the *unseen* cards (deck − my hand −
+played) to known opponent hand counts. Two layers exploit this:
+
+- **Analytic (exact, O(1) per query).** Marginals are hypergeometric:
+  an opponent with n of the U unseen cards holds a specific card with
+  probability n/U, and at least one of H target cards with probability
+  1 − C(U−H, n)/C(U, n). This gives the per-card probability map,
+  P(holds a 2 / an ace / any card beating this single), and per-rank
+  maps — and it sharpens automatically as U shrinks. Endgame
+  elimination falls out for free: when U equals a player's count their
+  hand is *known* (`known_hand`).
+- **Monte-Carlo with pass evidence.** Sample worlds consistent with the
+  counts; weight each world by pass plausibility — a world where a
+  passer could have beaten the table is down-weighted by
+  ``pass_honesty`` (strategic passing is legal, so passes are soft
+  evidence, not voids). Whole-hand events (has a pair/triple/bomb,
+  can beat this 5-card combo) come from these weighted samples.
+
+Where beliefs plug in today: DMC's action encoding carries
+P(opponent beats this move's top card) and P(holds a 2) per opponent;
+the Gym observation carries the per-rank belief map; ISMCTS can draw
+determinizations from the pass-weighted posterior instead of uniform;
+and the UI has a belief panel showing all of it live. The step-5
+*neural* belief head learns what this module cannot: correlations
+induced by opponents' *policies* (what they chose to play, not just
+what they legally could hold).
+
+### League training (`big2/league.py`)
+
+Trainables stop playing fixed benchmarks and instead train against a
+**population**: scripted anchors (smart, dumper, lowest, decomp), the
+other trainables (CEM linear, DMC), and frozen checkpoints of past
+generations. Each generation: rated matches with random 4-member
+lineups → DMC trains with opponents sampled per episode from the field
+→ CEM candidates are evaluated against sampled lineups (common random
+numbers per iteration) → frozen copies join the population (bounded
+history, anchors never pruned). Ratings are mean score/game vs the
+field. This is PSRO-lite: still missing are dedicated exploiter agents
+(train a best response to each frozen champion, add it to the pool —
+also our exploitability proxy) and a meta-solver over the empirical
+payoff matrix instead of uniform opponent sampling.
 
 **Step 5 — PPO with a set head.** Charlesworth (2018) already showed
 PPO self-play reaches strong human-competitive play in 4-player Big 2;
