@@ -150,13 +150,31 @@ Baselines, 1,000 games/variant:
 tiered+two |       -1.76 ( 20%) |       -4.34 (  4%) |       +3.79 ( 37%) |       +2.31 ( 39%)
 ```
 
-Stronger lineup, 1,000 games/variant — the trained agents on top:
+Stronger lineup, 1,000 games/variant, seed 3 — `linear` and `dmc` are the
+**league-trained champions** (see below):
 
 ```
    variant |              smart |             decomp |             linear |                dmc
 ----------------------------------------------------------------------------------------------
-    tiered |       -1.55 ( 21%) |       -1.44 ( 26%) |       +2.22 ( 30%) |       +0.77 ( 24%)
-     plain |       -1.22 ( 21%) |       -0.72 ( 26%) |       +1.63 ( 30%) |       +0.31 ( 24%)
+    tiered |       -1.26 ( 24%) |       -1.23 ( 25%) |       +2.42 ( 31%) |       +0.07 ( 20%)
+     plain |       -0.86 ( 24%) |       -0.67 ( 25%) |       +1.70 ( 31%) |       -0.17 ( 20%)
+```
+
+League final standings (4 generations, 1,600 final rated games, seed 11) —
+the CEM lineage tops the field and every trainable outrates the anchors:
+
+```
+          member       kind  games     avg
+             cem        cem    623   +2.58
+          cem-g4 checkpoint    651   +2.45
+          cem-g3 checkpoint    629   +1.24
+             dmc        dmc    625   +0.31
+          dmc-g4 checkpoint    673   +0.31
+          dumper   scripted    640   -0.40
+           smart   scripted    652   -0.42
+          decomp   scripted    654   -0.97
+          dmc-g3 checkpoint    634   -1.55
+          lowest   scripted    619   -3.62
 ```
 
 ISMCTS (100 sims), 200 games, tiered — the strongest no-training agent:
@@ -179,8 +197,9 @@ which is exactly why we report both.
 python -m unittest discover -s tests            # test suite
 python -m big2.experiments --games 1000         # tournament across variants
 python -m big2.experiments --games 500 --strategies smart decomp linear dmc
-python -m big2.rl  --iters 25 --pop 32          # retrain CEM linear policy
-python -m big2.dmc --episodes 60000             # retrain DMC policy
+python -m big2.league --generations 4           # league-train CEM + DMC vs the field
+python -m big2.rl  --iters 25 --pop 32          # benchmark-train CEM (legacy)
+python -m big2.dmc --episodes 60000             # self-play-train DMC (legacy)
 ```
 
 ### Gym environment
