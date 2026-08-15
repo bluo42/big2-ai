@@ -202,6 +202,32 @@ ISMCTS (100 sims), 200 games, tiered — the strongest no-training agent:
     tiered |       +1.60 ( 32%) |       +0.33 ( 27%) |       -1.65 ( 22%) |       -0.28 ( 20%)
 ```
 
+### The 1,000,000-game evolution run
+
+4 islands × 250k games (60% of them 1v1), populations of MLP Q-agents
+with evolved hyperparameters, ~75 minutes on 4 cores. Island 2's
+champion — a **2-layer [128, 64]** net, lr ≈ 0.0017 — won the
+cross-island playoff (+0.52/game over 1,000 games), beating all three
+islands that converged on deeper 3-layer nets. Against the established
+agents (1,000 games/variant, seed 9):
+
+```
+   variant |              smart |             decomp |             linear |                evo
+----------------------------------------------------------------------------------------------
+    tiered |       -1.00 ( 24%) |       -0.88 ( 27%) |       +1.62 ( 27%) |       +0.26 ( 22%)
+     plain |       -0.77 ( 24%) |       -0.27 ( 27%) |       +1.02 ( 27%) |       +0.02 ( 22%)
+```
+
+and in a trained-agents-vs-search table (200 games, tiered): `evo`
++0.44 vs ISMCTS −0.94 — the first learned agent here to outrate
+determinized search in a shared lineup. The honest headline: after a
+million games, the evolved MLP beats search, DMC, and every scripted
+baseline, but the CEM-trained linear move-scorer over hand-crafted
+features is *still* the single strongest agent. Feature engineering
+plus direct payoff optimization remains hard to beat at this scale —
+closing that gap (deeper training, PPO, belief heads) is the live
+research question the ladder's next steps answer.
+
 Early findings worth keeping: always playing your strongest cards
 (`highest`) is the reliably worst strategy; `decomp` wins often (26% in a
 strong lineup) but its structure-preserving passes make its *losses* heavy
