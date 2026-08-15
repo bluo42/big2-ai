@@ -73,6 +73,10 @@ def make_strategy(name: str, seed: Optional[int] = None) -> Strategy:
         from big2.dmc import DMCPolicy
 
         return DMCPolicy.load("big2/policies/dmc_linear.npz")
+    if name == "evo":
+        from big2.nn import NNPolicy
+
+        return NNPolicy.load("big2/policies/evo_mlp.npz")
     raise ValueError(f"unknown strategy {name!r}")
 
 

@@ -297,11 +297,11 @@
 
 const RANKS = ["3","4","5","6","7","8","9","10","J","Q","K","A","2"];
 const SUITS = ["♦","♣","♥","♠"]; // diamonds clubs hearts spades
-const AI_KINDS = ["smart", "dmc", "ismcts", "decomp", "linear", "dumper", "lowest", "highest", "random"];
+const AI_KINDS = ["evo", "smart", "dmc", "ismcts", "decomp", "linear", "dumper", "lowest", "highest", "random"];
 const AI_LABEL = {
-  smart: "Smart (heuristic)", dmc: "DMC (trained)", ismcts: "ISMCTS (search)",
-  decomp: "Decomposition", linear: "Linear (trained)", dumper: "Dumper",
-  lowest: "Lowest card", highest: "Highest card", random: "Random",
+  evo: "Evo MLP (trained)", smart: "Smart (heuristic)", dmc: "DMC (trained)",
+  ismcts: "ISMCTS (search)", decomp: "Decomposition", linear: "Linear (trained)",
+  dumper: "Dumper", lowest: "Lowest card", highest: "Highest card", random: "Random",
 };
 const TYPE_LABEL = {
   SINGLE: "Single", PAIR: "Pair", TRIPLE: "Triple", STRAIGHT: "Straight",
@@ -340,7 +340,7 @@ function renderAiRows() {
       o.textContent = AI_LABEL[kind];
       sel.appendChild(o);
     }
-    sel.value = i === 1 ? "dmc" : "smart";
+    sel.value = i === 1 ? "evo" : "smart";
     row.append(label, sel);
     rows.appendChild(row);
   }

@@ -60,6 +60,15 @@ def make_ai(name: str, seed: Optional[int] = None) -> Strategy:
             return DMCPolicy.load(DMC_FILE)
         except Exception:
             return SmartHeuristic()
+    if name == "evo":
+        try:
+            from big2.nn import NNPolicy
+
+            return NNPolicy.load(
+                os.path.join(os.path.dirname(__file__), "policies", "evo_mlp.npz")
+            )
+        except Exception:
+            return SmartHeuristic()
     if name == "ismcts":
         from big2.ismcts import ISMCTSStrategy
 
