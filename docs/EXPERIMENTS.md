@@ -88,9 +88,9 @@ contributor can pick them up directly.
 | 1 | Fast vectorized env (bitboards) | ➖ partial: profiled pure-Python engine (~65 µs/step, ~10⁴ games/min) is enough through step 4; bitboard rewrite deferred until deep self-play needs 10⁶+ games |
 | 2 | Scripted baselines: greedy-lowest → decomposition-optimal | ✅ `strategies.py`, `decomposition.py` |
 | 3 | ISMCTS, no learning | ✅ `ismcts.py` (root-determinized; optional belief-posterior determinization) |
-| 4 | DMC with action encoding | ✅ `dmc.py` (linear estimator + belief features; torch MLP is the designated upgrade) |
-| 5 | PPO + set-attention head + perfect-info critic + belief auxiliary | ➖ groundwork: exact belief module (`beliefs.py`) feeds features today; the *learned* belief head replaces/augments it |
-| 6 | League / PSRO population | ➖ first rung: `league.py` (population sampling + frozen checkpoints); exploiters + meta-solver missing |
+| 4 | DMC with action encoding | ✅ `dmc.py` (linear + belief features) and `nn.py`/`evolve.py` (MLP estimators, 1-3 hidden layers, trained at ~10⁶-game scale) |
+| 5 | PPO + set-attention head + perfect-info critic + belief auxiliary | ➖ groundwork: exact belief module (`beliefs.py`) feeds features; MLP value nets exist; the learned belief head + policy-gradient head remain |
+| 6 | League / PSRO population | ➖ two rungs: `league.py` (population sampling + frozen checkpoints) and `evolve.py` (PBT islands: hyperparameter evolution, migration, agents-only matchups); exploiters + meta-solver missing |
 | 7 | Search at inference (policy prior + value + belief particles) | ⬜ planned (belief particles exist — `BeliefState.sample_worlds`) |
 | 8 | Runtime opponent adaptation, bounded deviation | ➖ primitive: pass-honesty likelihood weighting is a fixed opponent model; learned/adaptive models planned |
 
@@ -169,6 +169,39 @@ field. This is PSRO-lite: still missing are dedicated exploiter agents
 (train a best response to each frozen champion, add it to the pool —
 also our exploitability proxy) and a meta-solver over the empirical
 payoff matrix instead of uniform opponent sampling.
+
+### Evolutionary population training at scale (`big2/evolve.py`)
+
+The 10⁶-game trainer. Agents **only play other agents** — no benchmark
+evaluation inside the loop; ratings come from the training games
+themselves. Design, following population-based training (PBT):
+
+- **Islands, one per core.** Each island evolves an independent
+  population of MLP Q-agents (encoding v3: DouZero action encoding +
+  belief features + hand-structure/decomposition features) whose
+  *hyperparameters are sampled*: 1-3 hidden layers up to 256 wide,
+  log-uniform learning rates, exploration epsilons.
+- **Random matchups.** Seats are drawn per game: ~60% trainables (an
+  agent can draw several seats — true self-play), ~20% frozen opponents
+  (round checkpoints of this island's past best + champions migrated
+  from other islands), ~20% scripted floor (dumper, decomp, lowest) so
+  the population can't drift into conventions that lose to simple play.
+  Several trainables learn from the same game, each from its own seat.
+- **Exploit + explore.** Each round the worst-rated trainee adopts the
+  best's network and architecture, then mutates learning rate and
+  epsilon. The round's best is frozen into the opponent pool.
+- **1v1 curriculum.** The first ~60% of games are 2-player (~3x faster,
+  denser reward signal), then the population graduates to 4-player.
+- **Champion playoff.** Island finalists meet in a seat-rotated
+  4-player tournament; the winner ships as `evo_mlp.npz`.
+
+Known limitations, stated up front: Monte-Carlo returns on a shared
+scale (÷39) mean 2p and 4p rewards are comparable but not identical
+distributions across the phase switch; ratings are vs a shifting field
+(non-stationary), which is why champion selection uses the final round
+and a playoff rather than lifetime averages; and mutation never *grows*
+architectures mid-lineage (deeper nets enter via fresh sampling and
+exploit-adoption).
 
 **Step 5 — PPO with a set head.** Charlesworth (2018) already showed
 PPO self-play reaches strong human-competitive play in 4-player Big 2;

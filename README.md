@@ -19,7 +19,10 @@ big2/
   ismcts.py         determinized ISMCTS (optionally belief-weighted worlds)
   rl.py             linear move-scorer trained with cross-entropy method
   dmc.py            DouZero-style DMC: Q(s, a) over encoded actions + beliefs
+  nn.py             numpy MLP Q-network (1-3 hidden layers, Adam)
+  features.py       encoding v3: action encoding + beliefs + hand structure
   league.py         population training: trainables vs the field, not benchmarks
+  evolve.py         PBT islands: ~10^6 agents-only games, 1v1 curriculum
   experiments.py    seat-rotated tournaments across scoring variants
   server.py         Flask backend for the web UI
   static/           the UI (self-contained HTML/JS/CSS)
@@ -104,6 +107,20 @@ scored against sampled lineups, and frozen copies of both join the
 population. League champions are saved over the standard policy files.
 See `docs/EXPERIMENTS.md` for what separates this from full PSRO
 (exploiters + meta-solver) and the plan to get there.
+
+## Evolutionary training at scale (`python -m big2.evolve`)
+
+The ~1,000,000-game trainer. MLP Q-agents (encoding v3, 1-3 hidden
+layers up to 256 wide) evolve on **islands** (one process per core):
+seats in every game are drawn at random from the trainable population,
+frozen round-checkpoints, champions migrated from other islands, and a
+thin dumper/decomp/lowest scripted floor — agents only ever play other
+agents. Each round the worst-rated trainee adopts the best's network
+and mutates its learning rate and exploration (PBT exploit + explore).
+The first ~60% of games are played **1v1** for cheap, dense learning
+signal before graduating to 4-player. Island champions meet in a final
+seat-rotated playoff and the winner ships as `big2/policies/evo_mlp.npz`
+(the `evo` agent in tournaments and the UI).
 
 ## The agent ladder
 
