@@ -448,8 +448,10 @@ def train_ppo(
                 loss.backward()
                 torch.nn.utils.clip_grad_norm_(net.parameters(), 1.0)
                 opt.step()
-                pol_loss, val_loss = float(p_loss), float(v_loss)
-                ent, bel_loss = float(e_loss), float(b_loss)
+                pol_loss = float(p_loss.detach())
+                val_loss = float(v_loss.detach())
+                ent = float(e_loss.detach())
+                bel_loss = float(b_loss.detach())
 
         if verbose and it % 5 == 0:
             mean_score = float(np.mean([e["score"] for e in episodes])) * SCORE_SCALE
