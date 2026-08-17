@@ -248,6 +248,52 @@ class Store:
             ],
         }
 
+    def report(self) -> str:
+        """Human-readable testers report: who's playing and how it's going."""
+        with self._connect() as con:
+            cur = con.cursor()
+            cur.execute(
+                "SELECT u.username, COUNT(g.id), COALESCE(SUM(g.won), 0), "
+                "COALESCE(SUM(g.user_score), 0), MAX(g.ts), MIN(g.ts) "
+                "FROM users u LEFT JOIN games g ON g.user_id = u.id "
+                "GROUP BY u.id, u.username ORDER BY COUNT(g.id) DESC"
+            )
+            rows = cur.fetchall()
+            cur.execute(
+                "SELECT COUNT(*), COALESCE(SUM(won), 0), "
+                "COALESCE(SUM(user_score), 0) FROM games"
+            )
+            total = cur.fetchone()
+        import time as _t
+
+        lines = [
+            f"{'tester':<20} {'games':>6} {'wins':>5} {'win%':>6} "
+            f"{'total':>7} {'avg':>7}  last played"
+        ]
+        for name, games, wins, score, last, _first in rows:
+            games = int(games or 0)
+            if games:
+                lines.append(
+                    f"{name:<20} {games:>6} {int(wins):>5} "
+                    f"{int(wins) / games:>6.0%} {int(score):>+7} "
+                    f"{int(score) / games:>+7.1f}  "
+                    f"{_t.strftime('%Y-%m-%d %H:%M', _t.gmtime(last))}"
+                )
+            else:
+                lines.append(f"{name:<20} {0:>6} {'-':>5} {'-':>6} {'-':>7} {'-':>7}  (no games yet)")
+        n_games, n_wins, n_score = int(total[0]), int(total[1]), int(total[2])
+        lines.append("")
+        if n_games:
+            lines.append(
+                f"ALL TESTERS: {n_games} games, humans won {n_wins} "
+                f"({n_wins / n_games:.0%}), human net score {n_score:+d} "
+                f"({n_score / n_games:+.2f}/game) -> the AI table is "
+                f"{'losing to' if n_score > 0 else 'beating'} the humans"
+            )
+        else:
+            lines.append("ALL TESTERS: no recorded games yet")
+        return "\n".join(lines)
+
     def export_replays(self, path: str) -> int:
         with self._connect() as con:
             cur = con.cursor()
@@ -286,10 +332,15 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--export", metavar="PATH",
                         help="dump recorded human games as JSONL")
+    parser.add_argument("--report", action="store_true",
+                        help="print the testers report (per-user record + "
+                             "humans-vs-AI aggregate)")
     args = parser.parse_args()
     if args.export:
         n = get_store().export_replays(args.export)
         print(f"exported {n} recorded games -> {args.export}")
+    if args.report:
+        print(get_store().report())
 
 
 if __name__ == "__main__":
