@@ -1,2 +1,15 @@
+[project]
+name = "big2-ai"
+version = "1.0.0"
+description = "Big 2 card game: playable web UI, agents, and RL testbed"
+requires-python = ">=3.9"
+dependencies = [
+    "flask>=3.0",
+    "numpy>=1.24",
+]
+
+[tool.uv]
+package = false
+
 [tool.vercel]
 entrypoint = "big2.server:app"
