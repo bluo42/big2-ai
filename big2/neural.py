@@ -241,7 +241,8 @@ def _load_snapshot_policy(path: str) -> Optional["PPOPolicy"]:
 
 def rollout_games(args) -> bytes:
     """Worker: play games with the given weights, return episode batch."""
-    state_bytes, n_games, seed, selfplay_prob, snapshot_paths, past_self_prob = args
+    (state_bytes, n_games, seed, selfplay_prob, snapshot_paths,
+     past_self_prob, exploit_path) = args
     import torch
 
     torch.set_num_threads(1)
@@ -250,11 +251,18 @@ def rollout_games(args) -> bytes:
     net.load_state_dict(payload["state_dict"])
     net.eval()
     rng = random.Random(seed)
-    pool = _opponent_pool()
-    past_selves = [
-        p for p in (_load_snapshot_policy(pth) for pth in snapshot_paths)
-        if p is not None
-    ]
+    if exploit_path:
+        # Pure best response: every opponent seat is the frozen target.
+        target = _load_snapshot_policy(exploit_path)
+        pool = [target] if target else _opponent_pool()
+        past_selves: List[PPOPolicy] = []
+        selfplay_prob = 0.0
+    else:
+        pool = _opponent_pool()
+        past_selves = [
+            p for p in (_load_snapshot_policy(pth) for pth in snapshot_paths)
+            if p is not None
+        ]
     episodes = []
 
     for _ in range(n_games):
@@ -362,6 +370,8 @@ def train_ppo(
     snapshot_every_iters: int = 100,  # freeze a past-self opponent this often
     max_snapshots: int = 3,
     past_self_prob: float = 0.5,  # opponent-seat draw: past selves vs field
+    exploit_target: Optional[str] = None,  # train a pure best response to
+    #   this frozen checkpoint; probes then measure points extracted from it
     verbose: bool = True,
 ):
     import torch
@@ -374,8 +384,10 @@ def train_ppo(
         payload = torch.load(resume, map_location="cpu", weights_only=True)
         net.load_state_dict(payload["state_dict"])
         # Don't let a resumed run overwrite a better checkpoint with its
-        # first mediocre probe: inherit the saved best.
-        best_probe = float(payload.get("meta", {}).get("probe", -1e9))
+        # first mediocre probe: inherit the saved best — unless this is an
+        # exploiter warm start, where the metric (vs-target) starts fresh.
+        if not exploit_target:
+            best_probe = float(payload.get("meta", {}).get("probe", -1e9))
     opt = torch.optim.Adam(net.parameters(), lr=lr)
     rng = random.Random(seed)
     pool = mp.Pool(workers)
@@ -419,16 +431,20 @@ def train_ppo(
             paths.append(out)  # the best-so-far checkpoint plays too
         return paths
 
+    if exploit_target:
+        # The exploitability probe: how much a dedicated adversary extracts.
+        champs = [PPOPolicy.load(exploit_target) for _ in range(3)]
+
     for it in range(1, iters + 1):
         blob = pickle.dumps(
             {"state_dict": net.state_dict(), "d_model": d_model, "heads": heads}
         )
         per = games_per_iter // workers
-        snaps = _snapshot_paths()
+        snaps = [] if exploit_target else _snapshot_paths()
         results = pool.map(
             rollout_games,
             [(blob, per, rng.randrange(2**31), selfplay_prob, snaps,
-              past_self_prob)
+              past_self_prob, exploit_target)
              for _ in range(workers)],
         )
         episodes = [e for r in results for e in pickle.loads(r)]
@@ -532,15 +548,18 @@ def train_ppo(
                 if len(champs) == 3
                 else float("nan")
             )
+            tag = 6 if exploit_target else 5
+            label = "vs-target" if exploit_target else "vs-champions"
             os.makedirs(os.path.dirname(progress_path), exist_ok=True)
             with open(progress_path, "a") as f:
                 f.write(
-                    f"5,{total_games},4,ppo,0,{lr:.5f},"
+                    f"{tag},{total_games},4,"
+                    f"{'exploiter' if exploit_target else 'ppo'},0,{lr:.5f},"
                     f"{vs_base:.3f},{vs_champ:.3f}\n"
                 )
             print(
                 f"[ppo] probe @{total_games}: vs-baselines {vs_base:+.2f}  "
-                f"vs-champions {vs_champ:+.2f}",
+                f"{label} {vs_champ:+.2f}",
                 flush=True,
             )
             net.train()
@@ -596,6 +615,9 @@ def main() -> None:
     parser.add_argument("--snapshot-every-iters", type=int, default=100)
     parser.add_argument("--past-self-prob", type=float, default=0.5)
     parser.add_argument("--confirm-games", type=int, default=480)
+    parser.add_argument("--exploit-target", default=None,
+                        help="freeze this checkpoint as the only opponent "
+                             "and train a pure best response to it")
     args = parser.parse_args()
     train_ppo(
         iters=args.iters, games_per_iter=args.games_per_iter,
@@ -606,6 +628,7 @@ def main() -> None:
         snapshot_every_iters=args.snapshot_every_iters,
         past_self_prob=args.past_self_prob,
         confirm_games=args.confirm_games,
+        exploit_target=args.exploit_target,
     )
 
 
