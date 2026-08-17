@@ -45,6 +45,7 @@ from big2.cards import NUM_CARDS
 from big2.combos import Combo
 from big2.features import FEAT_DIM, DecisionContext, encode_sa
 from big2.game import Big2Game, ScoringConfig
+from big2.profiles import PROFILE_DIM, OpponentProfileBook
 from big2.rl import NUM_FEATURES as CEM_DIM
 from big2.rl import LinearPolicy, move_features as cem_move_features
 from big2.rules import DEFAULT_RULES
@@ -53,6 +54,8 @@ from big2.strategies import FiveCardDumper, SmartHeuristic, Strategy
 SCORE_SCALE = 39.0
 ACT_DIM = FEAT_DIM + CEM_DIM + 1  # v4 features + CEM features + champion advice
 BELIEF_SLOTS = 3 * NUM_CARDS  # per-opponent hand membership, seat order after me
+PROFILE_SLOTS = 3 * PROFILE_DIM  # cross-game opponent profiles, same order
+STATE_DIM = FEAT_DIM + PROFILE_SLOTS
 
 DEFAULT_MODEL_PATH = "big2/policies/ppo_attn.pt"
 
@@ -80,14 +83,33 @@ class _ChampionAdvice:
 
 
 def encode_decision(
-    game: Big2Game, player: int
+    game: Big2Game,
+    player: int,
+    book: Optional[OpponentProfileBook] = None,
+    seat_keys: Optional[Dict[int, object]] = None,
+    include_profiles: bool = True,
 ) -> Tuple[List[Optional[Combo]], np.ndarray, np.ndarray]:
-    """(options, state_vec, action_matrix) for one decision."""
+    """(options, state_vec, action_matrix) for one decision.
+
+    With ``include_profiles`` the state carries cross-game opponent
+    profiles (zeros when no ``book``/``seat_keys`` are supplied — e.g.
+    at deploy time or in probes)."""
     options: List[Optional[Combo]] = list(game.legal_moves(player))
     if game.can_pass():
         options.append(None)
     ctx = DecisionContext(game, player)
     state = encode_sa(game, player, None, ctx)  # pass-encoding == state view
+    if include_profiles:
+        prof = np.zeros(PROFILE_SLOTS, dtype=np.float32)
+        if book is not None and seat_keys:
+            others = [p for p in range(game.num_players) if p != player][:3]
+            for j, p in enumerate(others):
+                key = seat_keys.get(p)
+                if key is not None:
+                    prof[j * PROFILE_DIM : (j + 1) * PROFILE_DIM] = (
+                        book.features(key)
+                    )
+        state = np.concatenate([state, prof])
     units_keys = {
         frozenset(u.cards)
         for u in SmartHeuristic._partition(game.hands[player])
@@ -121,7 +143,7 @@ def belief_target(game: Big2Game, player: int) -> np.ndarray:
 # ----------------------------------------------------------------------
 
 
-def build_net(d_model: int = 192, heads: int = 4):
+def build_net(d_model: int = 192, heads: int = 4, state_dim: int = STATE_DIM):
     import torch
     import torch.nn as nn
 
@@ -129,8 +151,9 @@ def build_net(d_model: int = 192, heads: int = 4):
         def __init__(self):
             super().__init__()
             self.d = d_model
+            self.state_dim = state_dim
             self.state_mlp = nn.Sequential(
-                nn.Linear(FEAT_DIM, d_model), nn.ReLU(),
+                nn.Linear(state_dim, d_model), nn.ReLU(),
                 nn.Linear(d_model, d_model), nn.ReLU(),
             )
             self.act_mlp = nn.Sequential(
@@ -169,18 +192,29 @@ def build_net(d_model: int = 192, heads: int = 4):
 
 
 class PPOPolicy(Strategy):
-    """Greedy inference wrapper for a trained set-attention net."""
+    """Greedy inference wrapper for a trained set-attention net.
+
+    Attach ``book`` (an OpponentProfileBook) and ``seat_keys`` to feed
+    cross-game opponent profiles; without them, profile inputs are zero
+    (nets trained before profiles existed simply have a narrower input
+    and skip them entirely)."""
 
     name = "ppo"
 
     def __init__(self, net, d_model: int = 192):
         self.net = net
         self.net.eval()
+        self.uses_profiles = getattr(net, "state_dim", STATE_DIM) != FEAT_DIM
+        self.book: Optional[OpponentProfileBook] = None
+        self.seat_keys: Optional[Dict[int, object]] = None
 
     def select(self, game: Big2Game, player: int) -> Optional[Combo]:
         import torch
 
-        options, state, acts = encode_decision(game, player)
+        options, state, acts = encode_decision(
+            game, player, book=self.book, seat_keys=self.seat_keys,
+            include_profiles=self.uses_profiles,
+        )
         if len(options) == 1:
             return options[0]
         with torch.no_grad():
@@ -196,9 +230,29 @@ class PPOPolicy(Strategy):
         import torch
 
         payload = torch.load(path, map_location="cpu", weights_only=True)
-        net = build_net(payload.get("d_model", 192), payload.get("heads", 4))
+        in_dim = payload["state_dict"]["state_mlp.0.weight"].shape[1]
+        net = build_net(
+            payload.get("d_model", 192), payload.get("heads", 4),
+            state_dim=in_dim,
+        )
         net.load_state_dict(payload["state_dict"])
         return cls(net)
+
+
+def widen_state_dict(sd: Dict, new_dim: int = STATE_DIM) -> Dict:
+    """Grow a checkpoint's state input with zero columns so a net trained
+    before opponent profiles can warm-start a profile-aware run (the new
+    features start with exactly zero influence)."""
+    import torch
+
+    w = sd["state_mlp.0.weight"]
+    if w.shape[1] >= new_dim:
+        return sd
+    sd = dict(sd)
+    wide = torch.zeros(w.shape[0], new_dim)
+    wide[:, : w.shape[1]] = w
+    sd["state_mlp.0.weight"] = wide
+    return sd
 
 
 # ----------------------------------------------------------------------
@@ -223,6 +277,10 @@ def _opponent_pool() -> List[Strategy]:
 # so a refreshed snapshot file is reloaded exactly once per worker.
 _SNAP_CACHE: Dict[Tuple[str, float], "PPOPolicy"] = {}
 
+# Worker-side cross-game opponent profiles: persists across games within
+# the worker process, refreshing per opponent every ~500 observed games.
+_PROFILE_BOOK = OpponentProfileBook(refresh_games=500)
+
 
 def _load_snapshot_policy(path: str) -> Optional["PPOPolicy"]:
     try:
@@ -233,7 +291,9 @@ def _load_snapshot_policy(path: str) -> Optional["PPOPolicy"]:
         if len(_SNAP_CACHE) > 8:
             _SNAP_CACHE.clear()
         try:
-            _SNAP_CACHE[key] = PPOPolicy.load(path)
+            policy = PPOPolicy.load(path)
+            policy.name = os.path.basename(path)  # stable profile identity
+            _SNAP_CACHE[key] = policy
         except Exception:
             return None
     return _SNAP_CACHE[key]
@@ -280,6 +340,7 @@ def rollout_games(args) -> bytes:
                 opponents[p] = rng.choice(past_selves)
             else:
                 opponents[p] = rng.choice(pool)
+        seat_keys = {p: o.name for p, o in opponents.items()}
         game = Big2Game(
             scoring=ScoringConfig(), rules=DEFAULT_RULES, num_players=4,
             rng=random.Random(rng.randrange(2**31)),
@@ -294,7 +355,9 @@ def rollout_games(args) -> bytes:
             if p not in ppo_seats:
                 game.step(opponents[p].select(game, p))
                 continue
-            options, state, acts = encode_decision(game, p)
+            options, state, acts = encode_decision(
+                game, p, book=_PROFILE_BOOK, seat_keys=seat_keys
+            )
             if len(options) == 1:
                 game.step(options[0])
                 continue
@@ -315,6 +378,9 @@ def rollout_games(args) -> bytes:
             t["value"].append(float(value[0]))
             t["belief"].append(belief_target(game, p))
             game.step(options[idx])
+
+        # Fold the finished game into the cross-game opponent profiles.
+        _PROFILE_BOOK.observe_game(game, seat_keys)
 
         for p, t in trajs.items():
             if t["state"]:
@@ -382,7 +448,8 @@ def train_ppo(
     best_probe = -1e9
     if resume:
         payload = torch.load(resume, map_location="cpu", weights_only=True)
-        net.load_state_dict(payload["state_dict"])
+        # Pre-profile checkpoints warm-start via zero-column widening.
+        net.load_state_dict(widen_state_dict(payload["state_dict"], STATE_DIM))
         # Don't let a resumed run overwrite a better checkpoint with its
         # first mediocre probe: inherit the saved best — unless this is an
         # exploiter warm start, where the metric (vs-target) starts fresh.

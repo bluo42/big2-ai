@@ -103,7 +103,12 @@ class NumpyPPOPolicy:
         return (x @ p["policy_head.weight"].T + p["policy_head.bias"])[:, 0]
 
     def select(self, game: Big2Game, player: int) -> Optional[Combo]:
-        options, state, acts = encode_decision(game, player)
+        from big2.features import FEAT_DIM
+
+        in_dim = self.p["state_mlp.0.weight"].shape[1]
+        options, state, acts = encode_decision(
+            game, player, include_profiles=(in_dim != FEAT_DIM)
+        )
         if len(options) == 1:
             return options[0]
         return options[int(np.argmax(self._logits(state, acts)))]
