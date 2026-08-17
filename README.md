@@ -331,6 +331,49 @@ ISMCTS (100 sims), 200 games, tiered — the strongest no-training agent:
     tiered |       +1.60 ( 32%) |       +0.33 ( 27%) |       -1.65 ( 22%) |       -0.28 ( 20%)
 ```
 
+### The 25k-game 10-model tournament (WangBot_v1 release audit)
+
+All 210 possible 4-model tables from a field of 10, each played 119
+times (24,990 games, seat order the only randomness): the top 3 of the
+v1 PPO line, the top 3 of the WangBot/v1.1 line **including two
+rejected-probe breakout snapshots**, the CEM linear champion, and the
+three scripted anchors. Every model plays exactly 9,996 games; every
+pair shares exactly 3,332 tables (cells ±0.1).
+
+```
+model           games  avg/game   win%     total
+wang_rej_a       9996     +1.02    30%    +10211
+wang_best        9996     +0.93    29%     +9305
+v1_exploiter     9996     +0.77    26%     +7700
+wang_rej_b       9996     +0.69    29%     +6874
+v1_prev          9996     +0.64    27%     +6394
+v1_champ         9996     +0.33    27%     +3294
+cem_linear       9996     +0.26    22%     +2613
+decomp           9996     -1.46    24%    -14558
+dumper           9996     -1.50    16%    -14987
+smart            9996     -1.69    21%    -16846
+
+row avg score/game in games that also seat col (diag: overall avg):
+               wang_re wang_be v1_expl wang_re v1_prev v1_cham cem_lin  decomp  dumper   smart
+wang_rej_a       +1.02   +0.86   +0.64   +0.70   +0.62   +0.90   +1.01   +1.71   +1.28   +1.47
+wang_best        +0.62   +0.93   +0.72   +0.66   +0.85   +0.54   +1.31   +1.26   +1.14   +1.28
+v1_exploiter     +0.60   +0.57   +0.77   +0.63   +0.41   +0.66   +0.56   +1.25   +0.83   +1.43
+wang_rej_b       +0.29   +0.26   +0.67   +0.69   +0.70   +0.56   +0.71   +1.04   +1.10   +0.85
+v1_prev          +0.39   +0.39   +0.71   +0.24   +0.64   +0.55   +0.56   +0.79   +1.11   +1.02
+v1_champ         +0.17   +0.30   +0.30   -0.03   +0.11   +0.33   +0.19   +0.37   +0.95   +0.61
+cem_linear       -0.08   -0.09   +0.33   +0.28   +0.31   +0.09   +0.26   +0.45   +0.45   +0.61
+decomp           -1.68   -1.53   -2.08   -1.35   -1.49   -1.12   -1.52   -1.46   -1.17   -1.18
+dumper           -1.55   -1.76   -1.81   -1.56   -1.69   -1.45   -1.63   -1.01   -1.50   -1.04
+smart            -1.81   -1.81   -1.79   -1.63   -1.74   -1.73   -1.99   -1.48   -1.18   -1.69
+```
+
+The WangBot line takes 3 of the top 4 seats and the shipped
+`wang_best` beats every model's shared tables except its own sibling;
+`v1_champ` — a specialist against the old champions trio — lands
+mid-table in this broader field. `wang_rej_a` (the last rejected
+breakout) edging `wang_best` is within the ±0.1 cell noise. The
+scripted anchors are pure food for every trained line.
+
 ### Current results under the house rules (soft pass, tiered, seed 17)
 
 All numbers below use the current defaults. Baselines, 1,000 games:
