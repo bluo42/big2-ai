@@ -114,6 +114,28 @@ island, so you can see improvement and plateaus as games accumulate.
 | `ScoringConfig.big_hand_double/full_hand_triple` | on | tiered card-count multipliers |
 | `ScoringConfig.two_modifier` | off | legacy: holding a 2 at game end adds the base payment again |
 
+## The PPO champion and its exploitability
+
+The strongest agent is the **PPO set-attention net** (`ppo`,
+`big2/neural.py`): pointer-style policy over the legal-action set, a
+learned belief head trained on perfect-information hand targets, the CEM
+linear scorer's features *and its per-move advice* as inputs, cross-game
+opponent profiles (EMA, 500-game half-life), and a training diet of
+self-play, frozen past selves, and the previous champions. Confirmed
++3.17/game vs the champion trio over 480 games; beats the CEM linear
+**head-to-head** at +1.25/game (32% wins vs 25% break-even, 600 games).
+It plays on torch-free deploys through a numpy port of the exact forward
+pass (`big2/ppo_numpy.py`, equivalence unit-tested).
+
+**Exploitability probe** (ladder step 6/8): a dedicated adversary —
+warm-started from the champion, trained ~50k games purely against three
+frozen copies of it, with opponent profiling — extracts only
+**+0.39/game** (1,000-game measurement) while remaining an honest
+player (+1.96 vs scripted baselines). Best-response extraction under
+half a point per game means the champion's population training left few
+seams; the exploiter now joins the opponent pool for future league
+rounds, which is the PSRO loop closing.
+
 ## Beliefs: probability maps of hidden hands
 
 Big 2 deals the whole deck, so from any seat the hidden state is just an
