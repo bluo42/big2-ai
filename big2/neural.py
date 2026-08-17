@@ -314,6 +314,25 @@ def widen_state_dict(sd: Dict, new_dim: int = STATE_DIM,
 # ----------------------------------------------------------------------
 
 
+def probe_2v2(policy: Strategy, ref: Strategy, n_games: int,
+              scoring, rules, seed: int) -> float:
+    """Mean score per ``policy`` seat over games seating 2 copies of it
+    against 2 copies of ``ref``, cycling the seat pattern."""
+    rng = random.Random(seed)
+    patterns = ([0, 0, 1, 1], [0, 1, 0, 1], [0, 1, 1, 0])
+    total = 0.0
+    for g in range(n_games):
+        pat = patterns[g % 3]
+        seats = [policy if side == 0 else ref for side in pat]
+        game = Big2Game(
+            scoring=scoring, rules=rules, num_players=4,
+            rng=random.Random(rng.randrange(2**31)),
+        )
+        scores = game.play_out(seats)
+        total += sum(scores[i] for i in range(4) if pat[i] == 0) / 2
+    return total / n_games
+
+
 def _opponent_pool() -> List[Strategy]:
     """Deliberately lean: the strongest scripted agent (dumper, per the
     current baseline table), the CEM linear champion, and — closing the
