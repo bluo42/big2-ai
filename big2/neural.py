@@ -356,6 +356,7 @@ def train_ppo(
     resume: Optional[str] = None,
     probe_every_iters: int = 30,
     probe_games: int = 120,
+    confirm_games: int = 480,  # independent re-test before a new "best"
     progress_path: str = "big2/policies/evolve/progress.csv",
     games_offset: int = 0,  # games trained in prior runs (resume bookkeeping)
     snapshot_every_iters: int = 100,  # freeze a past-self opponent this often
@@ -545,14 +546,34 @@ def train_ppo(
             net.train()
             score = vs_champ if vs_champ == vs_champ else vs_base
             if score > best_probe:
-                best_probe = score
-                _atomic_save(
-                    {"state_dict": net.state_dict(), "d_model": d_model,
-                     "heads": heads, "meta": {"iter": it, "games": total_games,
-                                              "probe": score}},
-                    out,
+                # Two-stage gate: a 120-game probe is +-1 noisy, so a
+                # would-be best must confirm on an independent larger
+                # re-test; the confirmed number is what gets recorded.
+                opponents = champs[:3] if len(champs) == 3 else probe_baselines
+                confirmed = _probe(
+                    policy, opponents, confirm_games, ScoringConfig(),
+                    DEFAULT_RULES, seed=it + 7919,
                 )
-                print(f"[ppo] saved best ({score:+.2f}) -> {out}", flush=True)
+                net.train()
+                print(
+                    f"[ppo] candidate {score:+.2f} -> confirmation "
+                    f"({confirm_games} games): {confirmed:+.2f}",
+                    flush=True,
+                )
+                if confirmed > best_probe:
+                    best_probe = confirmed
+                    _atomic_save(
+                        {"state_dict": net.state_dict(), "d_model": d_model,
+                         "heads": heads,
+                         "meta": {"iter": it, "games": total_games,
+                                  "probe": confirmed,
+                                  "confirm_games": confirm_games}},
+                        out,
+                    )
+                    print(
+                        f"[ppo] saved best (confirmed {confirmed:+.2f}) -> {out}",
+                        flush=True,
+                    )
 
     pool.close()
     pool.join()
@@ -574,6 +595,7 @@ def main() -> None:
     parser.add_argument("--games-offset", type=int, default=0)
     parser.add_argument("--snapshot-every-iters", type=int, default=100)
     parser.add_argument("--past-self-prob", type=float, default=0.5)
+    parser.add_argument("--confirm-games", type=int, default=480)
     args = parser.parse_args()
     train_ppo(
         iters=args.iters, games_per_iter=args.games_per_iter,
@@ -583,6 +605,7 @@ def main() -> None:
         games_offset=args.games_offset,
         snapshot_every_iters=args.snapshot_every_iters,
         past_self_prob=args.past_self_prob,
+        confirm_games=args.confirm_games,
     )
 
 
