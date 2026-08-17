@@ -132,17 +132,23 @@ class MLPQ:
 
 
 class NNPolicy:
-    """Greedy argmax over MLP Q values; a drop-in Strategy."""
+    """Greedy argmax over MLP Q values; a drop-in Strategy.
+
+    The feature-encoding version is inferred from the network's input
+    width, so champions trained on older encodings keep playing."""
 
     name = "evo"
 
     def __init__(self, net: MLPQ):
+        from big2.features import version_for_dim
+
         self.net = net
+        self.feat_version = version_for_dim(net.in_dim)
 
     def select(self, game, player):
-        from big2.features import DecisionContext, encode_options
+        from big2.features import encode_options
 
-        options, feats = encode_options(game, player)
+        options, feats = encode_options(game, player, self.feat_version)
         if len(options) == 1:
             return options[0]
         return options[int(np.argmax(self.net.predict(feats)))]

@@ -1,0 +1,480 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Big 2 — Game Explorer</title>
+<style>
+  :root {
+    --bg: #101422; --panel: #1a2032; --panel-2: #232b42; --line: #2e3854;
+    --text: #e8ecf6; --muted: #8a94ad; --accent: #4f8cff; --accent-2: #37c978;
+    --danger: #e05563; --card-bg: #f7f8fb; --card-edge: #c9cede;
+    --s-diamond: #2f7fd1; --s-club: #27995c; --s-heart: #d64550; --s-spade: #23233a;
+    font-size: 14px;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    background: radial-gradient(1200px 700px at 50% -10%, #1b2340 0%, var(--bg) 60%);
+    color: var(--text); font-family: "Avenir Next", "Segoe UI", system-ui, sans-serif;
+    min-height: 100vh; padding: 14px 18px 40px;
+  }
+  a { color: var(--accent); text-decoration: none; }
+  button {
+    font: inherit; color: inherit; background: var(--panel-2);
+    border: 1px solid var(--line); border-radius: 8px; padding: 6px 14px;
+    cursor: pointer; transition: all .12s;
+  }
+  button:hover:not(:disabled) { border-color: var(--accent); }
+  button:disabled { opacity: .38; cursor: default; }
+  button.primary { background: var(--accent); border-color: var(--accent); font-weight: 600; }
+  select, input[type=number], input[type=text] {
+    font: inherit; color: var(--text); background: var(--panel-2);
+    border: 1px solid var(--line); border-radius: 7px; padding: 5px 8px;
+  }
+  input[type=number] { width: 70px; }
+  input[type=text] { width: 90px; }
+  h1 { font-size: 1.3rem; letter-spacing: .04em; margin-bottom: 2px; }
+  h1 span { color: var(--accent); }
+  .sub { color: var(--muted); margin-bottom: 14px; font-size: .85rem; }
+  .panel {
+    background: var(--panel); border: 1px solid var(--line); border-radius: 12px;
+    padding: 14px 16px; margin-bottom: 14px;
+  }
+  .panel h2 {
+    font-size: .72rem; text-transform: uppercase; letter-spacing: .12em;
+    color: var(--muted); margin-bottom: 10px;
+  }
+  .row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin-bottom: 8px; }
+  .row label { color: var(--muted); font-size: .85rem; }
+  .check { display: inline-flex; gap: 6px; align-items: center; color: var(--text); }
+  .check input { accent-color: var(--accent); }
+
+  #layout { display: grid; grid-template-columns: 330px 1fr; gap: 14px; align-items: start; }
+  @media (max-width: 1000px) { #layout { grid-template-columns: 1fr; } }
+
+  /* games list */
+  #gamesList { max-height: 420px; overflow-y: auto; }
+  #gamesList table { width: 100%; border-collapse: collapse; font-size: .82rem; }
+  #gamesList th, #gamesList td { padding: 5px 6px; border-bottom: 1px solid var(--line); text-align: left; }
+  #gamesList tr { cursor: pointer; }
+  #gamesList tbody tr:hover { background: #4f8cff14; }
+  #gamesList tr.sel { background: #4f8cff2b; }
+  .pos { color: var(--accent-2); } .neg { color: var(--danger); }
+
+  /* replay */
+  #seats { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 12px; }
+  .seat {
+    background: var(--panel); border: 1px solid var(--line); border-radius: 12px;
+    padding: 10px 12px; min-height: 108px; transition: border-color .1s, box-shadow .1s;
+  }
+  .seat.acting { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent), 0 0 14px #4f8cff2e; }
+  .seat.winner { border-color: var(--accent-2); }
+  .seat .head { display: flex; align-items: baseline; gap: 8px; margin-bottom: 8px; }
+  .seat .name { font-weight: 600; font-size: .9rem; }
+  .seat .meta { color: var(--muted); font-size: .74rem; }
+  .seat .badge {
+    font-size: .62rem; font-weight: 700; background: var(--danger);
+    border-radius: 999px; padding: 1px 8px; display: none;
+  }
+  .seat.passed .badge { display: inline-block; }
+  .seat .cards { display: flex; flex-wrap: wrap; }
+
+  #tableStrip {
+    background: linear-gradient(160deg, #17301f, #122718); border: 1px solid #2c4a35;
+    border-radius: 12px; padding: 10px 14px; margin-bottom: 12px;
+    display: flex; align-items: center; gap: 14px; min-height: 84px;
+  }
+  #tableStrip .label { color: #9db8a6; font-size: .76rem; letter-spacing: .06em; width: 150px; }
+  #tableStrip .cards { display: flex; }
+  #tableStrip .empty { color: #567a63; }
+
+  #controls { display: flex; gap: 8px; align-items: center; margin-bottom: 12px; flex-wrap: wrap; }
+  #pos { color: var(--muted); font-size: .84rem; min-width: 110px; }
+
+  #replayGrid { display: grid; grid-template-columns: 1fr 240px; gap: 12px; }
+  @media (max-width: 1200px) { #replayGrid { grid-template-columns: 1fr; } }
+  #log {
+    background: var(--panel); border: 1px solid var(--line); border-radius: 12px;
+    padding: 10px; max-height: 560px; overflow-y: auto; font-size: .78rem;
+  }
+  .log-entry { display: flex; gap: 7px; padding: 2px 5px; border-radius: 5px; cursor: pointer; align-items: baseline; }
+  .log-entry:hover { background: #4f8cff14; }
+  .log-entry.cur { background: #4f8cff30; }
+  .log-entry .who { color: var(--muted); flex: 0 0 54px; }
+  .log-entry .what { font-weight: 600; }
+  .log-entry .what.pass { color: var(--muted); font-weight: 400; font-style: italic; }
+  .log-sep { border-bottom: 1px dashed var(--line); margin: 4px 0; }
+
+  /* cards */
+  .card {
+    width: 40px; height: 57px; background: var(--card-bg);
+    border: 1px solid var(--card-edge); border-radius: 6px; position: relative;
+    margin: 0 -10px 4px 0; box-shadow: 0 1px 4px #0006; color: #222; flex: 0 0 auto;
+  }
+  .card .tl { position: absolute; top: 3px; left: 4px; font-weight: 700; font-size: .72rem; line-height: 1; }
+  .card .tl small { display: block; font-size: .66rem; }
+  .card .pip { position: absolute; bottom: 2px; right: 4px; font-size: .95rem; }
+  .card.hl { box-shadow: 0 0 0 2px var(--accent), 0 2px 6px #000a; z-index: 2; }
+  .suit-0 { color: var(--s-diamond); } .suit-1 { color: var(--s-club); }
+  .suit-2 { color: var(--s-heart); } .suit-3 { color: var(--s-spade); }
+  #status { color: var(--muted); font-size: .82rem; min-height: 1.2em; }
+</style>
+</head>
+<body>
+
+<h1>BIG <span>2</span> — game explorer</h1>
+<div class="sub">simulate agent-vs-agent games with every hand exposed &middot; <a href="/">back to play</a></div>
+
+<div id="layout">
+  <div>
+    <div class="panel">
+      <h2>Matchup</h2>
+      <div class="row" id="agentRows"></div>
+      <div class="row">
+        <label>players</label>
+        <select id="numPlayers">
+          <option value="2">2</option><option value="3">3</option>
+          <option value="4" selected>4</option>
+        </select>
+        <label>games</label>
+        <input type="number" id="numGames" min="1" max="100" value="10">
+        <label>seed</label>
+        <input type="text" id="seed" placeholder="random">
+      </div>
+      <div class="row">
+        <span class="check"><input type="checkbox" id="rTriples"><label>lone triples</label></span>
+        <span class="check"><input type="checkbox" id="rPassLocks"><label>pass locks</label></span>
+        <span class="check"><input type="checkbox" id="rFlushRank"><label>flush by rank</label></span>
+        <span class="check"><input type="checkbox" id="rTiered" checked><label>10-12&times;2 / 13&times;3</label></span>
+        <span class="check"><input type="checkbox" id="rTwo"><label>2-holder</label></span>
+      </div>
+      <div class="row">
+        <button class="primary" id="simBtn">Simulate</button>
+        <span id="status"></span>
+      </div>
+    </div>
+
+    <div class="panel">
+      <h2>Games</h2>
+      <div id="gamesList"><table>
+        <thead><tr><th>#</th><th>winner</th><th>scores</th><th>len</th></tr></thead>
+        <tbody id="gamesBody"></tbody>
+      </table></div>
+    </div>
+
+    <div class="panel">
+      <h2>Training progress <button id="progBtn" style="float:right;padding:2px 10px;font-size:.72rem">refresh</button></h2>
+      <div id="progChart" style="min-height:40px;color:var(--muted);font-size:.8rem">
+        no probe data yet — appears while <code>big2.evolve</code> runs
+      </div>
+      <div id="progLegend" style="font-size:.68rem;color:var(--muted);margin-top:6px"></div>
+    </div>
+  </div>
+
+  <div id="replayPane" style="display:none">
+    <div id="seats"></div>
+    <div id="tableStrip">
+      <div class="label" id="tableLabel">TABLE</div>
+      <div class="cards" id="tableCards"><span class="empty">deal</span></div>
+    </div>
+    <div id="replayGrid">
+      <div>
+        <div id="controls">
+          <button id="btnFirst">&#x23ee;</button>
+          <button id="btnPrev">&#x2039; prev</button>
+          <button id="btnNext">next &#x203a;</button>
+          <button id="btnLast">&#x23ed;</button>
+          <button id="btnPlay">&#x25b6; auto</button>
+          <span id="pos"></span>
+        </div>
+        <div class="panel" id="summary"></div>
+      </div>
+      <div id="log"></div>
+    </div>
+  </div>
+</div>
+
+<script>
+"use strict";
+const RANKS = ["3","4","5","6","7","8","9","10","J","Q","K","A","2"];
+const SUITS = ["♦","♣","♥","♠"];
+const AI_KINDS = ["evo","smart","dmc","ismcts","decomp","linear","dumper","lowest","highest","random"];
+const TYPE_LABEL = {
+  SINGLE:"Single", PAIR:"Pair", TRIPLE:"Triple", STRAIGHT:"Straight", FLUSH:"Flush",
+  FULL_HOUSE:"Full house", FOUR_OF_A_KIND:"Four of a kind", STRAIGHT_FLUSH:"Straight flush",
+};
+const $ = (id) => document.getElementById(id);
+const rankOf = (c) => Math.floor(c / 4), suitOf = (c) => c % 4;
+const cardText = (c) => RANKS[rankOf(c)] + SUITS[suitOf(c)];
+
+let replays = [];
+let cur = null;        // current replay
+let cursor = 0;        // number of actions applied
+let timer = null;
+
+function cardEl(id, hl = false) {
+  const d = document.createElement("div");
+  d.className = `card suit-${suitOf(id)}` + (hl ? " hl" : "");
+  d.innerHTML = `<div class="tl">${RANKS[rankOf(id)]}<small>${SUITS[suitOf(id)]}</small></div>
+    <div class="pip">${SUITS[suitOf(id)]}</div>`;
+  return d;
+}
+
+/* ---------- setup ---------- */
+
+function renderAgentRows() {
+  const n = +$("numPlayers").value;
+  const holder = $("agentRows");
+  holder.innerHTML = "";
+  for (let i = 0; i < n; i++) {
+    const sel = document.createElement("select");
+    sel.className = "agentSel";
+    for (const k of AI_KINDS) {
+      const o = document.createElement("option");
+      o.value = k; o.textContent = k;
+      sel.appendChild(o);
+    }
+    sel.value = ["evo", "smart", "decomp", "dmc"][i] || "smart";
+    holder.appendChild(sel);
+  }
+}
+$("numPlayers").addEventListener("change", renderAgentRows);
+renderAgentRows();
+
+$("simBtn").addEventListener("click", async () => {
+  const agents = [...document.querySelectorAll(".agentSel")].map((s) => s.value);
+  const total = Math.min(100, Math.max(1, +$("numGames").value || 1));
+  const seedTxt = $("seed").value.trim();
+  const body = {
+    agents,
+    rules: {
+      allow_triples: $("rTriples").checked,
+      pass_locks: $("rPassLocks").checked,
+      flush_rank_first: $("rFlushRank").checked,
+    },
+    scoring: { tiered: $("rTiered").checked, two: $("rTwo").checked },
+  };
+  $("simBtn").disabled = true;
+  replays = [];
+  let done = 0;
+  try {
+    while (done < total) {
+      const batch = Math.min(10, total - done);
+      const req = { ...body, games: batch };
+      if (seedTxt) req.seed = (parseInt(seedTxt, 10) || 0) + done;
+      $("status").textContent = `simulating ${done}/${total}…`;
+      const res = await fetch("/api/simulate", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(req),
+      });
+      if (!res.ok) { $("status").textContent = (await res.json()).error || "error"; break; }
+      const data = await res.json();
+      replays.push(...data.replays);
+      done += batch;
+      renderGamesList();
+    }
+    $("status").textContent = `${replays.length} games ready — click one to replay`;
+  } finally {
+    $("simBtn").disabled = false;
+  }
+});
+
+function renderGamesList() {
+  const body = $("gamesBody");
+  body.innerHTML = "";
+  replays.forEach((r, i) => {
+    const tr = document.createElement("tr");
+    if (cur === r) tr.classList.add("sel");
+    const scores = Object.entries(r.scores)
+      .map(([p, s]) => `<span class="${s >= 0 ? "pos" : "neg"}">${s >= 0 ? "+" : ""}${s}</span>`)
+      .join(" ");
+    tr.innerHTML = `<td>${i + 1}</td><td>${r.players[r.winner]}</td>
+      <td>${scores}</td><td>${r.actions.length}</td>`;
+    tr.addEventListener("click", () => openReplay(r));
+    body.appendChild(tr);
+  });
+}
+
+/* ---------- replay ---------- */
+
+function openReplay(r) {
+  cur = r;
+  cursor = 0;
+  stopAuto();
+  $("replayPane").style.display = "";
+  renderGamesList();
+  render();
+}
+
+function stateAt(k) {
+  const hands = cur.initial_hands.map((h) => [...h]);
+  let table = null, tableBy = null, last = null;
+  const passed = new Array(cur.num_players).fill(false);
+  for (let i = 0; i < k; i++) {
+    const a = cur.actions[i];
+    last = a;
+    if (a.cards) {
+      hands[a.p] = hands[a.p].filter((c) => !a.cards.includes(c));
+      table = a; tableBy = a.p;
+      if (!cur.rules.pass_locks) passed.fill(false);
+    } else {
+      passed[a.p] = true;
+    }
+    if (a.te) { table = null; tableBy = null; passed.fill(false); }
+  }
+  return { hands, table, tableBy, passed, last };
+}
+
+function render() {
+  const st = stateAt(cursor);
+  const over = cursor >= cur.actions.length;
+  const next = over ? null : cur.actions[cursor];
+
+  const seats = $("seats");
+  seats.innerHTML = "";
+  seats.style.gridTemplateColumns = cur.num_players <= 2 ? "1fr 1fr" : "1fr 1fr";
+  for (let p = 0; p < cur.num_players; p++) {
+    const d = document.createElement("div");
+    d.className = "seat";
+    if (next && next.p === p) d.classList.add("acting");
+    if (st.passed[p]) d.classList.add("passed");
+    if (over && cur.winner === p) d.classList.add("winner");
+    const score = cur.scores[String(p)];
+    d.innerHTML = `<div class="head">
+        <span class="name">${cur.players[p]}${over && cur.winner === p ? " 👑" : ""}</span>
+        <span class="meta">${st.hands[p].length} cards</span>
+        <span class="badge">PASSED</span>
+        ${over ? `<span class="meta ${score >= 0 ? "pos" : "neg"}">${score >= 0 ? "+" : ""}${score}</span>` : ""}
+      </div>`;
+    const cardsDiv = document.createElement("div");
+    cardsDiv.className = "cards";
+    const justPlayed = st.last && st.last.p === p && st.last.cards ? new Set(st.last.cards) : new Set();
+    for (const c of st.hands[p]) cardsDiv.appendChild(cardEl(c));
+    d.appendChild(cardsDiv);
+    seats.appendChild(d);
+  }
+
+  const tc = $("tableCards");
+  tc.innerHTML = "";
+  if (st.table) {
+    $("tableLabel").innerHTML =
+      `${(TYPE_LABEL[st.table.type] || st.table.type).toUpperCase()}<br>` +
+      `<span style="color:#6f8f7c">${cur.players[st.tableBy]}</span>`;
+    for (const c of st.table.cards) tc.appendChild(cardEl(c, true));
+  } else {
+    $("tableLabel").textContent = "TABLE";
+    tc.innerHTML = `<span class="empty">${cursor === 0 ? "deal — " + cur.players.length + " hands face up" : "fresh trick"}</span>`;
+  }
+
+  $("pos").textContent = `action ${cursor}/${cur.actions.length}`;
+  $("btnPrev").disabled = $("btnFirst").disabled = cursor === 0;
+  $("btnNext").disabled = $("btnLast").disabled = over;
+
+  $("summary").innerHTML = over
+    ? `<h2>Result</h2>${cur.players[cur.winner]} wins &middot; payout ${cur.scoring} &middot; rules: ` +
+      `${cur.rules.allow_triples ? "triples " : ""}${cur.rules.pass_locks ? "pass-locks" : "soft-pass"}` +
+      `${cur.rules.flush_rank_first ? " flush-by-rank" : ""}`
+    : `<h2>Up next</h2>${next ? cur.players[next.p] + (next.cards ? " plays " + (TYPE_LABEL[next.type] || "") + " " + next.cards.map(cardText).join(" ") : " passes") : ""}`;
+
+  const log = $("log");
+  log.innerHTML = "";
+  cur.actions.forEach((a, i) => {
+    const row = document.createElement("div");
+    row.className = "log-entry" + (i === cursor - 1 ? " cur" : "");
+    row.innerHTML = `<span class="who">${cur.players[a.p].slice(0, 8)}</span>` +
+      (a.cards
+        ? `<span class="what">${TYPE_LABEL[a.type] || a.type}</span> <span>${a.cards.map(cardText).join(" ")}</span>`
+        : `<span class="what pass">passes</span>`);
+    row.addEventListener("click", () => { cursor = i + 1; stopAuto(); render(); });
+    log.appendChild(row);
+    if (a.te) {
+      const sep = document.createElement("div");
+      sep.className = "log-sep";
+      log.appendChild(sep);
+    }
+  });
+  const curEl = log.querySelector(".cur");
+  if (curEl) curEl.scrollIntoView({ block: "nearest" });
+}
+
+function step(delta) {
+  if (!cur) return;
+  cursor = Math.max(0, Math.min(cur.actions.length, cursor + delta));
+  render();
+}
+function stopAuto() {
+  if (timer) { clearInterval(timer); timer = null; $("btnPlay").textContent = "▶ auto"; }
+}
+$("btnFirst").addEventListener("click", () => { cursor = 0; stopAuto(); render(); });
+$("btnLast").addEventListener("click", () => { cursor = cur.actions.length; stopAuto(); render(); });
+$("btnPrev").addEventListener("click", () => { stopAuto(); step(-1); });
+$("btnNext").addEventListener("click", () => { stopAuto(); step(1); });
+$("btnPlay").addEventListener("click", () => {
+  if (timer) { stopAuto(); return; }
+  $("btnPlay").textContent = "⏸ pause";
+  timer = setInterval(() => {
+    if (!cur || cursor >= cur.actions.length) { stopAuto(); return; }
+    step(1);
+  }, 650);
+});
+document.addEventListener("keydown", (e) => {
+  if (!cur) return;
+  if (e.key === "ArrowRight") { stopAuto(); step(1); }
+  else if (e.key === "ArrowLeft") { stopAuto(); step(-1); }
+  else if (e.key === " ") { e.preventDefault(); $("btnPlay").click(); }
+});
+
+/* ---------- training progress chart ---------- */
+
+const ISLAND_COLORS = ["#4f8cff", "#37c978", "#e0a355", "#d64550"];
+
+async function loadProgress() {
+  let rows = [];
+  try {
+    const res = await fetch("/api/progress");
+    rows = res.ok ? (await res.json()).rows : [];
+  } catch {}
+  const holder = $("progChart");
+  if (!rows.length) {
+    holder.innerHTML = "no probe data yet — appears while <code>big2.evolve</code> runs";
+    $("progLegend").textContent = "";
+    return;
+  }
+  const W = 560, H = 190, PAD = 34;
+  const xs = rows.map((r) => r.games);
+  const ys = rows.flatMap((r) => [r.vs_baselines, r.vs_anchors].filter((v) => v !== null));
+  const xMax = Math.max(...xs), yMin = Math.min(-1, ...ys), yMax = Math.max(1, ...ys);
+  const X = (g) => PAD + (g / xMax) * (W - PAD - 8);
+  const Y = (v) => H - PAD + ((v - yMin) / (yMax - yMin)) * (PAD + 14 - H);
+  let svg = `<svg viewBox="0 0 ${W} ${H}" style="width:100%;background:var(--panel-2);border-radius:8px">`;
+  svg += `<line x1="${PAD}" y1="${Y(0)}" x2="${W - 8}" y2="${Y(0)}" stroke="#2e3854" stroke-width="1"/>`;
+  svg += `<text x="${PAD - 4}" y="${Y(0) + 3}" fill="#8a94ad" font-size="9" text-anchor="end">0</text>`;
+  svg += `<text x="${PAD - 4}" y="${Y(yMax) + 8}" fill="#8a94ad" font-size="9" text-anchor="end">${yMax.toFixed(1)}</text>`;
+  svg += `<text x="${PAD - 4}" y="${Y(yMin)}" fill="#8a94ad" font-size="9" text-anchor="end">${yMin.toFixed(1)}</text>`;
+  svg += `<text x="${W - 8}" y="${H - 6}" fill="#8a94ad" font-size="9" text-anchor="end">${(xMax / 1000).toFixed(0)}k games</text>`;
+  const islands = [...new Set(rows.map((r) => r.island))].sort();
+  for (const isl of islands) {
+    const mine = rows.filter((r) => r.island === isl).sort((a, b) => a.games - b.games);
+    const color = ISLAND_COLORS[isl % ISLAND_COLORS.length];
+    const path = (key) => mine
+      .filter((r) => r[key] !== null)
+      .map((r, i) => `${i ? "L" : "M"}${X(r.games).toFixed(1)},${Y(r[key]).toFixed(1)}`)
+      .join(" ");
+    if (path("vs_baselines"))
+      svg += `<path d="${path("vs_baselines")}" fill="none" stroke="${color}" stroke-width="2"/>`;
+    if (path("vs_anchors"))
+      svg += `<path d="${path("vs_anchors")}" fill="none" stroke="${color}" stroke-width="1.6" stroke-dasharray="5 4" opacity=".8"/>`;
+  }
+  svg += "</svg>";
+  holder.innerHTML = svg;
+  $("progLegend").innerHTML =
+    islands.map((i) =>
+      `<span style="color:${ISLAND_COLORS[i % 4]}">■</span> island ${i}`).join(" &nbsp; ") +
+    " &nbsp;&mdash;&nbsp; solid: avg score vs baselines (smart/decomp/dumper) &middot; dashed: vs anchor champions";
+}
+$("progBtn").addEventListener("click", loadProgress);
+loadProgress();
+setInterval(loadProgress, 60_000);
+</script>
+</body>
+</html>

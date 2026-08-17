@@ -78,7 +78,8 @@ class TestGameFlow(unittest.TestCase):
             game.step(None)
 
     def test_pass_locks_out_for_trick(self):
-        game = Big2Game(rng=random.Random(7))
+        # lock-out is now the variant, not the default
+        game = Big2Game(rules=RuleConfig(pass_locks=True), rng=random.Random(7))
         leader = game.turn
         game.step(game.legal_moves()[0])
         passer = game.turn

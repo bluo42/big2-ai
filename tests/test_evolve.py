@@ -28,7 +28,7 @@ class TestEvolve(unittest.TestCase):
             self.assertLessEqual(g.lr, 5e-2)
             self.assertGreaterEqual(g.eps, 0.02)
             self.assertLessEqual(g.eps, 0.30)
-            self.assertIn(len(g.hidden), (1, 2, 3))
+            self.assertIn(len(g.hidden), (1, 2, 3, 4))
 
     def test_islands_and_playoff(self):
         with tempfile.TemporaryDirectory() as d:

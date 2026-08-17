@@ -53,7 +53,12 @@ from big2.strategies import FiveCardDumper, PlayLowest, Strategy
 
 SCORE_SCALE = 39.0
 
-ARCHITECTURES: List[Tuple[int, ...]] = [(64,), (128, 64), (256, 128, 64)]
+ARCHITECTURES: List[Tuple[int, ...]] = [
+    (64,),
+    (128, 64),
+    (256, 128, 64),
+    (256, 192, 128, 64),  # deepest lineage
+]
 
 
 @dataclass(frozen=True)
@@ -145,9 +150,55 @@ def _play_training_game(
     return game.scores
 
 
+def _load_anchors() -> List[Frozen]:
+    """Current best agents as permanent frozen opponents — the field the
+    new population must learn to beat."""
+    anchors: List[Frozen] = []
+    from big2.nn import NNPolicy
+
+    try:
+        anchors.append(Frozen("anchor-evo", NNPolicy.load("big2/policies/evo_mlp.npz")))
+    except Exception:
+        pass
+    try:
+        from big2.rl import LinearPolicy
+
+        anchors.append(
+            Frozen("anchor-linear", LinearPolicy.load("big2/policies/linear_cem.npz"))
+        )
+    except Exception:
+        pass
+    try:
+        from big2.dmc import DMCPolicy
+
+        anchors.append(
+            Frozen("anchor-dmc", DMCPolicy.load("big2/policies/dmc_linear.npz"))
+        )
+    except Exception:
+        pass
+    return anchors
+
+
+def _probe(policy: Strategy, opponents: List[Strategy], n_games: int,
+           scoring: ScoringConfig, rules: RuleConfig, seed: int) -> float:
+    """Mean score of ``policy`` over seat-rotated 4p games vs 3 opponents."""
+    rng = random.Random(seed)
+    total = 0.0
+    for g in range(n_games):
+        seat = g % 4
+        opps = opponents[:]
+        seats = [policy if p == seat else opps.pop() for p in range(4)]
+        game = Big2Game(
+            scoring=scoring, rules=rules, num_players=4,
+            rng=random.Random(rng.randrange(2**31)),
+        )
+        total += game.play_out(seats)[seat]
+    return total / n_games
+
+
 def run_island(island_id: int, cfg: Dict, shared_dir: str) -> None:
     rng = random.Random(cfg["seed"] * 1000 + island_id)
-    scoring = ScoringConfig()
+    scoring = ScoringConfig()  # tiered house scoring only
     rules = DEFAULT_RULES
 
     trainees = [
@@ -155,12 +206,19 @@ def run_island(island_id: int, cfg: Dict, shared_dir: str) -> None:
         for k in range(cfg["pop_size"])
     ]
     from big2.decomposition import DecompositionStrategy
+    from big2.strategies import SmartHeuristic
 
     scripted = [
         Frozen("dumper", FiveCardDumper()),
         Frozen("decomp", DecompositionStrategy()),
         Frozen("lowest", PlayLowest()),
     ]
+    anchors = _load_anchors() if cfg.get("use_anchors", True) else []
+    probe_baselines = [SmartHeuristic(), DecompositionStrategy(), FiveCardDumper()]
+    probe_anchors = [a.policy for a in anchors[:3]]
+    progress_path = os.path.join(shared_dir, "progress.csv")
+    next_probe = cfg.get("probe_every", 0) or None
+
     checkpoints: List[Frozen] = []
     migrants: Dict[int, Frozen] = {}
     migrant_mtimes: Dict[int, float] = {}
@@ -179,15 +237,44 @@ def run_island(island_id: int, cfg: Dict, shared_dir: str) -> None:
             seats: List[Tuple[str, object]] = [("trainee", rng.choice(trainees))]
             for _ in range(num_players - 1):
                 r = rng.random()
-                if r < 0.6 or (r < 0.8 and not frozen_pool):
+                if r < 0.55:
                     seats.append(("trainee", rng.choice(trainees)))
-                elif r < 0.8:
+                elif r < 0.75 and frozen_pool:
                     seats.append(("frozen", rng.choice(frozen_pool)))
+                elif r < 0.90 and anchors:
+                    seats.append(("frozen", rng.choice(anchors)))
                 else:
                     seats.append(("frozen", rng.choice(scripted)))
             rng.shuffle(seats)
             _play_training_game(seats, num_players, scoring, rules, rng)
         total += games
+
+        # --- plateau probe: fixed benchmarks OUTSIDE the training field
+        if next_probe is not None and total >= next_probe:
+            next_probe += cfg["probe_every"]
+            best_now = max(trainees, key=lambda t: t.rating)
+            probe_policy = NNPolicy(best_now.net.clone())
+            vs_base = _probe(
+                probe_policy, probe_baselines, cfg["probe_games"],
+                scoring, rules, seed=total,
+            )
+            vs_anchor = (
+                _probe(probe_policy, probe_anchors, cfg["probe_games"],
+                       scoring, rules, seed=total + 1)
+                if len(probe_anchors) == 3
+                else float("nan")
+            )
+            with open(progress_path, "a") as f:
+                f.write(
+                    f"{island_id},{total},{2 if two_player else 4},"
+                    f"{best_now.tid},{len(best_now.genome.hidden)},"
+                    f"{best_now.genome.lr:.5f},{vs_base:.3f},{vs_anchor:.3f}\n"
+                )
+            print(
+                f"[island {island_id}] probe @{total}: vs-baselines "
+                f"{vs_base:+.2f}  vs-anchors {vs_anchor:+.2f}",
+                flush=True,
+            )
 
         # --- evolve: worst adopts best, then mutates (exploit + explore)
         rated = [t for t in trainees if t.window_games >= cfg["min_window_games"]]
@@ -301,6 +388,11 @@ def main() -> None:
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--shared-dir", default="big2/policies/evolve")
     parser.add_argument("--out", default="big2/policies/evo_mlp.npz")
+    parser.add_argument("--probe-every", type=int, default=25_000,
+                        help="games between plateau probes (0 = off)")
+    parser.add_argument("--probe-games", type=int, default=120)
+    parser.add_argument("--no-anchors", action="store_true",
+                        help="drop the current-best anchor opponents")
     args = parser.parse_args()
 
     os.makedirs(args.shared_dir, exist_ok=True)
@@ -315,6 +407,9 @@ def main() -> None:
         "min_window_games": args.min_window_games,
         "evolve_margin": args.evolve_margin,
         "max_checkpoints": args.max_checkpoints,
+        "probe_every": args.probe_every,
+        "probe_games": args.probe_games,
+        "use_anchors": not args.no_anchors,
     }
     print(
         f"evolving {args.games} games on {args.islands} islands "

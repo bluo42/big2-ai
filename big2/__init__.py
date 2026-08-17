@@ -4,7 +4,8 @@ Rules implemented (see README.md for details):
 - 4 players, 13 cards each, counter-clockwise play (seat order 0 -> 1 -> 2 -> 3).
 - Rank order 3 < 4 < ... < K < A < 2; suit order diamonds < clubs < hearts < spades.
 - Holder of the 3 of diamonds leads the first trick and must include it.
-- Passing locks you out for the remainder of the trick.
+- Soft pass by default: passing only skips your turn (RuleConfig can
+  enable per-trick lock-out).
 - Legal classes: singles, pairs, and 5-card poker hands (no lone triples).
 - First player to shed all cards wins; losers pay cards-remaining with
   configurable modifiers (holding a 2, holding >= 10 cards).

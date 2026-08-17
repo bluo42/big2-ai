@@ -140,8 +140,9 @@ def main() -> None:
         ),
     )
     parser.add_argument(
-        "--variants", nargs="*", default=list(SCORING_VARIANTS),
+        "--variants", nargs="*", default=["tiered"],
         choices=list(SCORING_VARIANTS),
+        help="default: tiered only (the house scoring rule)",
     )
     parser.add_argument(
         "--policy-file", type=str, default=None,

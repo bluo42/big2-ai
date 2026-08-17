@@ -12,10 +12,11 @@ Trick flow:
 - Following players must either beat the combo on the table (same size
   class) or pass.  Passing is always allowed when not leading, even if
   the player could beat the table ("strategic pass").
-- With ``RuleConfig(pass_locks=True)`` (house rule) a player who passes
-  is locked out for the remainder of the trick.  With ``pass_locks=False``
-  a pass only skips the turn; the trick ends when every other player
-  passes consecutively since the last play.
+- With ``RuleConfig(pass_locks=False)`` (house rule, "soft pass") a pass
+  only skips the turn — you may play again if the trick comes back
+  around — and the trick ends when every other player passes
+  consecutively since the last play.  With ``pass_locks=True`` a player
+  who passes is locked out for the remainder of the trick.
 - When the turn returns to the last player who played, they win the
   trick and lead the next one (any class).  The leader may not pass.
 

@@ -220,8 +220,8 @@
       <span>Lone triples playable<small>three of a kind becomes its own class, compared by rank</small></span>
     </label>
     <label class="rule">
-      <input type="checkbox" id="rPassLocks" checked>
-      <span>Passing locks you out of the trick<small>off = a pass only skips your turn; you may play when it comes back around</small></span>
+      <input type="checkbox" id="rPassLocks">
+      <span>Passing locks you out of the trick<small>off (house rule) = a pass only skips your turn; you may play when it comes back around</small></span>
     </label>
     <label class="rule">
       <input type="checkbox" id="rFlushSuit" checked>
@@ -315,7 +315,9 @@ const rankOf = (c) => Math.floor(c / 4);
 const suitOf = (c) => c % 4;
 const cardText = (c) => RANKS[rankOf(c)] + SUITS[suitOf(c)];
 
-let S = null;            // latest authoritative server state
+let S = null;            // latest authoritative server view
+let FS = null;           // full serialized game state (echoed to the
+                         // stateless API with every request)
 let seenHistory = 0;     // history entries already shown in the log
 let selected = new Set();
 let sortMode = "rank";
@@ -498,7 +500,11 @@ function renderBeliefs() {
 async function refreshBeliefs() {
   if (!beliefsOn || !S || S.phase !== "playing") { B = null; renderBeliefs(); return; }
   try {
-    const res = await fetch("/api/beliefs");
+    const res = await fetch("/api/beliefs", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ state: FS }),
+    });
     B = res.ok ? await res.json() : null;
   } catch { B = null; }
   renderBeliefs();
@@ -597,6 +603,7 @@ async function applyState(state) {
   busy = true;
   const prev = S;
   S = state;
+  FS = state.full_state;
   $("chipRules").textContent = ruleChip(state.rules);
   $("chipScoring").textContent = "payout: " + state.scoring;
 
@@ -711,19 +718,23 @@ $("playBtn").addEventListener("click", async () => {
   if (busy) return;
   const match = selectionCombo();
   if (!match) return;
-  const state = await post("/api/play", { cards: [...selected] });
+  const state = await post("/api/play", { state: FS, cards: [...selected] });
   if (state) { selected.clear(); await applyState(state); }
 });
 
 $("passBtn").addEventListener("click", async () => {
   if (busy) return;
-  const state = await post("/api/pass");
+  const state = await post("/api/pass", { state: FS });
   if (state) { selected.clear(); await applyState(state); }
 });
 
 $("hintBtn").addEventListener("click", async () => {
   if (busy) return;
-  const res = await fetch("/api/hint");
+  const res = await fetch("/api/hint", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ state: FS }),
+  });
   if (!res.ok) return;
   const hintData = await res.json();
   selected.clear();

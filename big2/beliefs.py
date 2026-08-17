@@ -63,8 +63,11 @@ class BeliefState:
     """Beliefs about hidden hands from one player's viewpoint."""
 
     def __init__(self, game: Big2Game, viewpoint: int,
-                 pass_honesty: float = 0.35,
+                 pass_honesty=0.35,
                  rng: Optional[random.Random] = None):
+        """``pass_honesty`` may be a float (same weight for everyone) or a
+        per-opponent dict {player: weight} — e.g. from
+        OpponentModel.honesty_map, which adapts to observed pass styles."""
         self.game = game
         self.viewpoint = viewpoint
         self.pass_honesty = pass_honesty
@@ -166,16 +169,24 @@ class BeliefState:
             i += self.counts[p]
         return world  # leftover pool cards = undealt (2-3 player games)
 
+    def _honesty(self, player: int) -> float:
+        if isinstance(self.pass_honesty, dict):
+            return float(self.pass_honesty.get(player, 1.0))
+        return float(self.pass_honesty)
+
     def _world_weight(self, world: Dict[int, List[Card]]) -> float:
-        if self.pass_honesty >= 1.0 or not self._evidence:
+        if not self._evidence:
             return 1.0
         w = 1.0
         for ev in self._evidence:
             if ev.player not in world:
                 continue
+            h = self._honesty(ev.player)
+            if h >= 1.0:
+                continue
             hand_at_pass = world[ev.player] + list(ev.played_after)
             if generate_moves(hand_at_pass, ev.table, self.game.rules):
-                w *= self.pass_honesty  # could have beaten it, yet passed
+                w *= h  # could have beaten it, yet passed
         return w
 
     def sample_worlds(self, k: int = 150) -> List[Tuple[Dict[int, List[Card]], float]]:

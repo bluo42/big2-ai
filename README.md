@@ -73,7 +73,7 @@ python -m big2.server          # then open http://127.0.0.1:8080
 | flag | default | variant |
 |------|---------|---------|
 | `allow_triples` | off | lone triples playable as their own class, compared by rank |
-| `pass_locks` | on | off = a pass only skips your turn (trick ends on a full round of consecutive passes) |
+| `pass_locks` | **off** (soft pass: you may pass and still play later in the same trick; the trick ends on a full round of consecutive passes) | on = passing locks you out for the trick |
 | `flush_rank_first` | off | on = flushes compare top ranks before suit (poker style) |
 | `ScoringConfig.big_hand_double/full_hand_triple` | on | tiered card-count multipliers |
 | `ScoringConfig.two_modifier` | off | legacy: holding a 2 at game end adds the base payment again |

@@ -1,0 +1,83 @@
+import random
+import unittest
+
+from big2 import webapi
+from big2.game import Big2Game
+from big2.strategies import PlayLowest
+
+
+class TestSerialization(unittest.TestCase):
+    def test_round_trip_mid_game(self):
+        game = Big2Game(rng=random.Random(3))
+        policy = PlayLowest()
+        for _ in range(9):
+            if game.game_over:
+                break
+            moves = game.legal_moves()
+            game.step(policy.select(game, game.turn) if moves else None)
+        blob = webapi.serialize_game(game, {0: None, 1: "smart", 2: "smart", 3: "smart"})
+        clone = webapi.deserialize_game(blob)
+        self.assertEqual(clone.turn, game.turn)
+        self.assertEqual(clone.hands, game.hands)
+        self.assertEqual(clone.passed, game.passed)
+        self.assertEqual(clone.played_cards, game.played_cards)
+        self.assertEqual(
+            [m.cards for m in clone.legal_moves()],
+            [m.cards for m in game.legal_moves()],
+        )
+        self.assertEqual(len(clone.history), len(game.history))
+        # deserialized game keeps playing to a valid end
+        scores = clone.play_out([PlayLowest()] * 4)
+        self.assertEqual(sum(scores.values()), 0)
+
+
+class TestHandlers(unittest.TestCase):
+    def test_new_then_actions_to_completion(self):
+        view = webapi.new_game(
+            {"num_ai": 3, "ai": ["lowest", "lowest", "lowest"], "seed": 5}
+        )
+        steps = 0
+        while view["phase"] == "playing":
+            body = {"state": view["full_state"]}
+            if view["legal_moves"]:
+                body["cards"] = view["legal_moves"][0]["cards"]
+            else:
+                body["pass"] = True
+            view = webapi.apply_action(body)
+            steps += 1
+            self.assertLess(steps, 300)
+        self.assertEqual(sum(view["scores"].values()), 0)
+
+    def test_illegal_action_rejected(self):
+        view = webapi.new_game({"num_ai": 1, "ai": ["lowest"], "seed": 1})
+        with self.assertRaises(ValueError):
+            webapi.apply_action({"state": view["full_state"], "cards": [51, 50]})
+
+    def test_hint_and_beliefs(self):
+        view = webapi.new_game({"num_ai": 2, "ai": ["smart", "smart"], "seed": 2})
+        h = webapi.hint({"state": view["full_state"]})
+        self.assertIn("type", h)
+        b = webapi.beliefs({"state": view["full_state"]})
+        self.assertEqual(len(b["opponents"]), 2)
+
+    def test_simulate_replay_integrity(self):
+        out = webapi.simulate(
+            {"agents": ["lowest", "dumper", "smart"], "games": 3, "seed": 9}
+        )
+        self.assertEqual(len(out["replays"]), 3)
+        for rep in out["replays"]:
+            hands = [list(h) for h in rep["initial_hands"]]
+            for a in rep["actions"]:
+                if a["cards"]:
+                    for c in a["cards"]:
+                        hands[a["p"]].remove(c)  # raises if inconsistent
+            self.assertEqual(len(hands[rep["winner"]]), 0)
+            self.assertEqual(sum(rep["scores"].values()), 0)
+
+    def test_progress_empty_ok(self):
+        out = webapi.progress()
+        self.assertIn("rows", out)
+
+
+if __name__ == "__main__":
+    unittest.main()
