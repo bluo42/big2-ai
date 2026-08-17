@@ -173,8 +173,12 @@ see `docs/EXPERIMENTS.md` for the full methodology and roadmap.
    move as input (52-bit mask + metadata + belief features) and regress
    Q(s, a) on final Monte-Carlo returns. Linear/numpy here; torch MLP is
    the designated upgrade.
-5. ➖ PPO + set-attention head + perfect-info critic + belief auxiliary —
-   the exact belief module is the groundwork; the learned head comes next.
+5. ✅ PPO + set-attention head (`big2/neural.py`, torch) — pointer-style
+   policy over the action set, learned belief head trained on
+   perfect-information hand targets, CEM features + champion advice as
+   action inputs, champion-anchored opponent sampling. Trains with
+   `python -m big2.neural`; plays as the `ppo` agent (torch required —
+   serverless deploys fall back to `smart`).
 6. ➖ League/PSRO population — `league.py` is the first rung (population
    sampling + frozen checkpoints); exploiters and a meta-solver remain.
 7. ⬜ Search at inference (policy prior + value + belief particles —

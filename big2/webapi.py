@@ -72,6 +72,14 @@ def make_ai(name: str, seed: Optional[int] = None) -> Strategy:
             return NNPolicy.load(_policy_path("evo_mlp.npz"))
         except Exception:
             return SmartHeuristic()
+    if name == "ppo":
+        # torch is a training-only dependency; serverless deploys fall back
+        try:
+            from big2.neural import PPOPolicy
+
+            return PPOPolicy.load(_policy_path("ppo_attn.pt"))
+        except Exception:
+            return SmartHeuristic()
     if name == "ismcts":
         from big2.ismcts import ISMCTSStrategy
 
@@ -90,7 +98,7 @@ def make_ai(name: str, seed: Optional[int] = None) -> Strategy:
 
 
 AI_KINDS = [
-    "smart", "evo", "dmc", "ismcts", "decomp", "linear",
+    "smart", "ppo", "evo", "dmc", "ismcts", "decomp", "linear",
     "dumper", "lowest", "highest", "random",
 ]
 

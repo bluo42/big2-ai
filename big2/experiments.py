@@ -77,6 +77,10 @@ def make_strategy(name: str, seed: Optional[int] = None) -> Strategy:
         from big2.nn import NNPolicy
 
         return NNPolicy.load("big2/policies/evo_mlp.npz")
+    if name == "ppo":
+        from big2.neural import PPOPolicy
+
+        return PPOPolicy.load()
     raise ValueError(f"unknown strategy {name!r}")
 
 

@@ -89,7 +89,7 @@ contributor can pick them up directly.
 | 2 | Scripted baselines: greedy-lowest → decomposition-optimal | ✅ `strategies.py`, `decomposition.py` |
 | 3 | ISMCTS, no learning | ✅ `ismcts.py` (root-determinized; optional belief-posterior determinization) |
 | 4 | DMC with action encoding | ✅ `dmc.py` (linear + belief features) and `nn.py`/`evolve.py` (MLP estimators, 1-3 hidden layers, trained at ~10⁶-game scale) |
-| 5 | PPO + set-attention head + perfect-info critic + belief auxiliary | ➖ groundwork: exact belief module (`beliefs.py`) feeds features; MLP value nets exist; the learned belief head + policy-gradient head remain |
+| 5 | PPO + set-attention head + perfect-info critic + belief auxiliary | ✅ `neural.py` (torch): pointer/set-attention policy over the action set, value head, learned belief head supervised with perfect-information hand targets, CEM features + champion advice folded into every action encoding, champion-anchored opponent sampling |
 | 6 | League / PSRO population | ➖ two rungs: `league.py` (population sampling + frozen checkpoints) and `evolve.py` (PBT islands: hyperparameter evolution, migration, agents-only matchups); exploiters + meta-solver missing |
 | 7 | Search at inference (policy prior + value + belief particles) | ⬜ planned (belief particles exist — `BeliefState.sample_worlds`) |
 | 8 | Runtime opponent adaptation, bounded deviation | ➖ statistical rung done: `opponents.py` tracks per-opponent style (pass rate, rank aggression, multi-card tendency) within a match, adapts pass-evidence weights per opponent, and feeds style + holding guesses into the v4 encoding; the neural opponent-embedding and bounded-deviation exploitation remain |
@@ -213,7 +213,27 @@ and plateaus become visible per island, per lineage. All training and
 probing use the tiered house scoring only; other scoring variants are
 reserved for explicit variant experiments.
 
-**Step 5 — PPO with a set head.** Charlesworth (2018) already showed
+### PPO with a set-attention head (`big2/neural.py`)
+
+The torch agent. Each decision encodes the state (275 dims: the v4
+encoding from a pass-perspective) and every candidate action (296 dims:
+v4 action features + the CEM linear scorer's 20 features + the CEM
+champion's own scalar advice for that move — the strongest hand-crafted
+evaluator, offered as an input rather than an oracle). A pointer-style
+set head — action embeddings conditioned on the state, one
+self-attention block over the set, per-action logits — gives a proper
+distribution over variable action sets. Three heads train jointly:
+PPO-clipped policy, value (GAE with terminal-only reward = the actual
+tiered score), and a **belief head** predicting all three opponents'
+exact hands with perfect-information supervision (the auxiliary loss
+that makes the trunk model hidden state). Opponents are sampled per
+game: pure self-play or the PPO seat vs the current champions
+(CEM linear, evolved MLP, DMC) and scripted regulars — best-response
+pressure against the field it must beat, with opponent-style features
+enabling within-match adaptation. Probes log to the same progress.csv
+the admin page charts (island tag 5).
+
+**Step 5 — PPO with a set head (original design notes).** Charlesworth (2018) already showed
 PPO self-play reaches strong human-competitive play in 4-player Big 2;
 his state/action encoding is worth mirroring. Modern upgrades, per
 PerfectDou and Suphx:
