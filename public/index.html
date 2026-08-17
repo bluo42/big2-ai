@@ -78,6 +78,9 @@
   #recordRows th, #lbBox th { color: var(--muted); font-weight: 500; font-size: .7rem; text-transform: uppercase; letter-spacing: .08em; }
   #recordRows td:nth-child(n+2), #recordRows th:nth-child(n+2),
   #lbBox td:nth-child(n+3), #lbBox th:nth-child(n+3) { text-align: right; }
+  #lbBox td:last-child, #lbBox th:last-child { text-align: left; color: var(--muted); }
+  #lbBox th[data-k] { cursor: pointer; user-select: none; }
+  #lbBox th[data-k]:hover { color: var(--accent); }
   .lineup-tag { color: var(--muted); font-size: .72rem; }
   .rules-list { list-style: none; }
   .rules-list li { padding: 5px 0; font-size: .86rem; color: var(--text); }
@@ -276,7 +279,12 @@
   </div>
 
   <div class="panel">
-    <h2>Leaderboard <button id="lbBtn" style="float:right;padding:2px 10px;font-size:.72rem">refresh</button></h2>
+    <h2>Leaderboard
+      <span style="float:right;display:flex;gap:6px;align-items:center">
+        <select id="lbFilter" style="padding:2px 6px;font-size:.72rem"></select>
+        <button id="lbBtn" style="padding:2px 10px;font-size:.72rem">refresh</button>
+      </span>
+    </h2>
     <div id="lbBox" class="acct-hint">loading…</div>
   </div>
 
@@ -1076,32 +1084,88 @@ function recordGameToAccount(replay) {
     .catch(() => {});
 }
 
-/* Public leaderboard: every tester's record, visible to everyone. */
-async function loadLeaderboard() {
+/* Public leaderboard: every tester's record, visible to everyone.
+   Filterable by which model the games were played against; columns
+   sort on click. */
+let LB = null;                      // raw /api/leaderboard payload
+let lbSort = { key: "total", dir: -1 };
+
+const stampKind = (s) => String(s).split("@")[0];
+
+function lbAggregate() {
+  const filter = $("lbFilter").value || "all";
+  const by = {};
+  for (const r of (LB && LB.rows) || []) {
+    const kinds = [...new Set((r.lineup || []).map(stampKind))];
+    if (filter !== "all" && !kinds.includes(filter)) continue;
+    const a = by[r.username] || (by[r.username] = {
+      player: r.username, games: 0, wins: 0, total: 0, vs: new Set(),
+    });
+    a.games += r.games;
+    a.wins += r.wins;
+    a.total += r.total_score;
+    kinds.forEach((k) => a.vs.add(k));
+  }
+  return Object.values(by);
+}
+
+function renderLeaderboard() {
   const box = $("lbBox");
-  let data = null;
-  try { data = await apiAuth("/api/leaderboard", {}); } catch {}
-  if (!data || !data.testers) {
-    box.textContent = "leaderboard unavailable";
+  if (!LB || !LB.rows) { box.textContent = "leaderboard unavailable"; return; }
+  const rows = lbAggregate();
+  if (!rows.length) {
+    box.textContent = $("lbFilter").value === "all" || !$("lbFilter").value
+      ? "no recorded games yet — sign in and be first on the board"
+      : "no recorded games against this model yet";
     return;
   }
+  for (const a of rows) {
+    a.winrate = a.wins / a.games;
+    a.avg = a.total / a.games;
+  }
+  const { key, dir } = lbSort;
+  rows.sort((x, y) => key === "player"
+    ? x.player.localeCompare(y.player) * dir
+    : (x[key] - y[key]) * dir);
   const sign = (x) => (x >= 0 ? "+" : "") + x;
-  const played = data.testers.filter((t) => t.games > 0);
-  if (!played.length) {
-    box.textContent = "no recorded games yet — sign in and be first on the board";
-    return;
+  const arrow = (k) => (key === k ? (dir < 0 ? " ▾" : " ▴") : "");
+  const cols = [["player", "player"], ["games", "games"], ["wins", "wins"],
+                ["winrate", "win%"], ["total", "total"], ["avg", "avg"]];
+  const head = "<th>#</th>" + cols.map(([k, label]) =>
+    `<th data-k="${k}">${label}${arrow(k)}</th>`).join("") + "<th>vs</th>";
+  const body = rows.map((a, i) => `
+    <tr${AUTH && a.player === AUTH.username ? ' style="color:var(--accent)"' : ""}>
+    <td>${i + 1}</td><td>${a.player}</td><td>${a.games}</td><td>${a.wins}</td>
+    <td>${Math.round(100 * a.winrate)}%</td>
+    <td class="${a.total >= 0 ? "pos" : "neg"}">${sign(a.total)}</td>
+    <td>${sign(a.avg.toFixed(1))}</td>
+    <td>${[...a.vs].sort().join(" · ")}</td></tr>`).join("");
+  box.innerHTML = `<table><tr>${head}</tr>${body}</table>`;
+  for (const th of box.querySelectorAll("th[data-k]")) {
+    th.addEventListener("click", () => {
+      const k = th.dataset.k;
+      if (lbSort.key === k) lbSort.dir = -lbSort.dir;
+      else lbSort = { key: k, dir: k === "player" ? 1 : -1 };
+      renderLeaderboard();
+    });
   }
-  const rows = played.map((t, i) => `
-    <tr${AUTH && t.username === AUTH.username ? ' style="color:var(--accent)"' : ""}>
-    <td>${i + 1}</td><td>${t.username}</td><td>${t.games}</td>
-    <td>${Math.round((100 * t.wins) / t.games)}%</td>
-    <td class="${t.total_score >= 0 ? "pos" : "neg"}">${sign(t.total_score)}</td>
-    <td>${sign((t.total_score / t.games).toFixed(1))}</td></tr>`).join("");
-  box.innerHTML = `<table>
-    <tr><th>#</th><th>player</th><th>games</th><th>win%</th><th>total</th><th>avg</th></tr>
-    ${rows}</table>`;
+}
+
+async function loadLeaderboard() {
+  try { LB = await apiAuth("/api/leaderboard", {}); } catch { LB = null; }
+  const sel = $("lbFilter");
+  const kinds = new Set();
+  for (const r of (LB && LB.rows) || []) {
+    (r.lineup || []).forEach((s) => kinds.add(stampKind(s)));
+  }
+  const cur = sel.value || "all";
+  sel.innerHTML = '<option value="all">vs all models</option>' +
+    [...kinds].sort().map((k) => `<option value="${k}">vs ${k}</option>`).join("");
+  sel.value = [...sel.options].some((o) => o.value === cur) ? cur : "all";
+  renderLeaderboard();
 }
 $("lbBtn").addEventListener("click", loadLeaderboard);
+$("lbFilter").addEventListener("change", renderLeaderboard);
 
 renderAuth();
 refreshAccountStats();

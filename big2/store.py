@@ -264,7 +264,27 @@ class Store:
                 "COALESCE(SUM(user_score), 0) FROM games"
             )
             total = cur.fetchone()
+            # Per-user-per-lineup breakdown so clients can filter the
+            # board by which models the games were played against.
+            cur.execute(
+                "SELECT u.username, g.lineup, COUNT(g.id), "
+                "COALESCE(SUM(g.won), 0), COALESCE(SUM(g.user_score), 0), "
+                "MAX(g.ts) FROM games g JOIN users u ON u.id = g.user_id "
+                "GROUP BY u.username, g.lineup"
+            )
+            lineup_rows = cur.fetchall()
         return {
+            "rows": [
+                {
+                    "username": r[0],
+                    "lineup": json.loads(r[1]),
+                    "games": int(r[2]),
+                    "wins": int(r[3]),
+                    "total_score": int(r[4]),
+                    "last_ts": float(r[5]),
+                }
+                for r in lineup_rows
+            ],
             "testers": [
                 {
                     "username": name,

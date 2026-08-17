@@ -91,6 +91,12 @@ class TestLeaderboard(unittest.TestCase):
                     "won": won, "replay": {},
                 })
             board = store.leaderboard()
+            # per-lineup rows: the client filters/aggregates from these
+            self.assertEqual(len(board["rows"]), 1)
+            self.assertEqual(board["rows"][0]["username"], "erin")
+            self.assertEqual(board["rows"][0]["lineup"], ["ppo@x"])
+            self.assertEqual(board["rows"][0]["games"], 2)
+            self.assertEqual(board["rows"][0]["wins"], 1)
             self.assertEqual(len(board["testers"]), 2)
             top = board["testers"][0]
             self.assertEqual(top["username"], "erin")
