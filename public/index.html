@@ -238,6 +238,7 @@
   </div>
 
   <button id="startBtn" class="primary">Deal cards</button>
+  <div id="setupErr" style="color:var(--danger);margin-top:10px;min-height:1.2em;font-size:.85rem"></div>
 </div>
 
 <!-- ============ GAME ============ -->
@@ -376,12 +377,24 @@ let lastSettings = null;
 
 async function startGame(settings) {
   lastSettings = settings;
-  const res = await fetch("/api/new", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(settings),
-  });
-  const state = await res.json();
+  $("setupErr").textContent = "";
+  $("startBtn").disabled = true;
+  let state;
+  try {
+    const res = await fetch("/api/new", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(settings),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.error || `server error (${res.status})`);
+    state = data;
+  } catch (e) {
+    $("setupErr").textContent = "Couldn't start the game: " + e.message;
+    $("startBtn").disabled = false;
+    return;
+  }
+  $("startBtn").disabled = false;
   $("setup").classList.add("hidden");
   $("game").classList.add("active");
   $("overlay").classList.remove("active");

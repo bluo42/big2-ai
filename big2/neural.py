@@ -341,6 +341,7 @@ def train_ppo(
     probe_every_iters: int = 30,
     probe_games: int = 120,
     progress_path: str = "big2/policies/evolve/progress.csv",
+    games_offset: int = 0,  # games trained in prior runs (resume bookkeeping)
     verbose: bool = True,
 ):
     import torch
@@ -355,7 +356,7 @@ def train_ppo(
     rng = random.Random(seed)
     pool = mp.Pool(workers)
     best_probe = -1e9
-    total_games = 0
+    total_games = games_offset
     t0 = time.time()
 
     from big2.decomposition import DecompositionStrategy
@@ -455,7 +456,7 @@ def train_ppo(
 
         if verbose and it % 5 == 0:
             mean_score = float(np.mean([e["score"] for e in episodes])) * SCORE_SCALE
-            rate = total_games / (time.time() - t0)
+            rate = (total_games - games_offset) / (time.time() - t0)
             print(
                 f"iter {it}/{iters} games {total_games} ({rate:.0f} g/s) "
                 f"score/ep {mean_score:+.2f} pi {pol_loss:.3f} v {val_loss:.3f} "
@@ -515,12 +516,14 @@ def main() -> None:
     parser.add_argument("--out", default=DEFAULT_MODEL_PATH)
     parser.add_argument("--resume", default=None)
     parser.add_argument("--probe-every-iters", type=int, default=30)
+    parser.add_argument("--games-offset", type=int, default=0)
     args = parser.parse_args()
     train_ppo(
         iters=args.iters, games_per_iter=args.games_per_iter,
         workers=args.workers, selfplay_prob=args.selfplay_prob, lr=args.lr,
         d_model=args.d_model, seed=args.seed, out=args.out,
         resume=args.resume, probe_every_iters=args.probe_every_iters,
+        games_offset=args.games_offset,
     )
 
 
