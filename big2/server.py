@@ -117,8 +117,7 @@ def progress():
 
 @app.route("/api/leaderboard", methods=["POST"])
 def leaderboard():
-    if not _admin_request_ok():
-        abort(404)
+    # Public by design: every player sees the testers leaderboard.
     return _handle(webapi.leaderboard)
 
 

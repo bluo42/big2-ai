@@ -73,6 +73,15 @@ belief panel, the explorer, and their API endpoints) is **disabled** on
 public deployments. Local dev keeps everything: `python -m big2.server`
 enables it, or set `BIG2_ADMIN=1` on a private deployment.
 
+Everyone sees the **public leaderboard** on the play page — each
+tester's games, win rate, and total/average score — and everyone picks
+their table from **two trained lines per seat**: `PPO v1`, the shipped
+champion (`ppo_attn.pt`, never overridden), and `PPO v1.1`, the
+endgame-aware line trained with explicit opponent-card-count danger
+features (`ppo_attn_v11.pt`, refreshed as its training run confirms
+better checkpoints). Games record under each model's own version stamp,
+so records against the two lines stay separate.
+
 **Admin accounts** get the full surface on the public deploy too: sign
 in as an admin username (default `brandonluo`; override with a
 comma-separated `BIG2_ADMIN_USERS` env var) and the play page unlocks

@@ -93,19 +93,24 @@ def make_ai(name: str, seed: Optional[int] = None) -> Strategy:
             return NNPolicy.load(_policy_path("evo_mlp.npz"))
         except Exception:
             return SmartHeuristic()
-    if name == "ppo":
-        # torch is training-only; deploys use the numpy inference port
+    if name in ("ppo", "ppo11"):
+        # torch is training-only; deploys use the numpy inference port.
+        # 'ppo' is the shipped v1 champion; 'ppo11' the endgame-aware
+        # v1.1 line (kept side by side — v1.1 never overrides v1).
+        stem = "ppo_attn_v11" if name == "ppo11" else "ppo_attn"
         try:
             from big2.neural import PPOPolicy
 
-            return PPOPolicy.load(_policy_path("ppo_attn.pt"))
+            return PPOPolicy.load(_policy_path(f"{stem}.pt"))
         except Exception:
             pass
         try:
             from big2.ppo_numpy import NumpyPPOPolicy
 
-            return NumpyPPOPolicy.load(_policy_path("ppo_attn_np.npz"))
+            return NumpyPPOPolicy.load(_policy_path(f"{stem}_np.npz"))
         except Exception:
+            if name == "ppo11":  # not exported yet: play the champion
+                return make_ai("ppo", seed)
             return SmartHeuristic()
     if name == "ismcts":
         from big2.ismcts import ISMCTSStrategy
@@ -125,12 +130,13 @@ def make_ai(name: str, seed: Optional[int] = None) -> Strategy:
 
 
 AI_KINDS = [
-    "smart", "ppo", "evo", "dmc", "ismcts", "decomp", "linear",
+    "smart", "ppo", "ppo11", "evo", "dmc", "ismcts", "decomp", "linear",
     "dumper", "lowest", "highest", "random",
 ]
 
 _POLICY_FILES = {
     "ppo": "ppo_attn.pt",
+    "ppo11": "ppo_attn_v11.pt",
     "evo": "evo_mlp.npz",
     "linear": "linear_cem.npz",
     "dmc": "dmc_linear.npz",
@@ -469,7 +475,7 @@ def user_stats(body: Dict) -> Dict:
 
 
 def leaderboard(_body: Optional[Dict] = None) -> Dict:
-    """Testers leaderboard (admin surface; the server gates access)."""
+    """Public testers leaderboard: usernames, games, wins, scores."""
     from big2.store import get_store
 
     return get_store().leaderboard()

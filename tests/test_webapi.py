@@ -78,6 +78,15 @@ class TestHandlers(unittest.TestCase):
         out = webapi.progress()
         self.assertIn("rows", out)
 
+    def test_two_ppo_lines_are_distinct_kinds(self):
+        self.assertIn("ppo11", webapi.AI_KINDS)
+        # each line stamps under its own name, so recorded games stay
+        # attributable to the exact model version at the table
+        self.assertTrue(webapi.model_stamp("ppo").startswith("ppo@"))
+        self.assertTrue(webapi.model_stamp("ppo11").startswith("ppo11@"))
+        view = webapi.new_game({"num_ai": 1, "ai": ["ppo11"], "seed": 11})
+        self.assertEqual(view["players"][1]["ai"], "ppo11")
+
     def test_assist_surface_gated_on_public_deploys(self):
         from big2.server import app
 
@@ -124,12 +133,12 @@ class TestHandlers(unittest.TestCase):
                     c.get(f"/admin?token={user_tok}").status_code, 404
                 )
                 self.assertEqual(
-                    c.post("/api/leaderboard",
-                           json={"token": user_tok}).status_code, 404
-                )
-                self.assertEqual(
                     c.post("/api/hint", json={"token": user_tok}).status_code,
                     404,
+                )
+                # ...but the leaderboard is public for everyone
+                self.assertEqual(
+                    c.post("/api/leaderboard", json={}).status_code, 200
                 )
                 # the admin account opens the full surface, any carrier
                 self.assertEqual(

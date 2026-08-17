@@ -72,11 +72,12 @@
   }
   .acct-err { color: var(--danger); font-size: .8rem; min-height: 1.1em; margin-top: 6px; }
   .acct-hint { color: var(--muted); font-size: .78rem; display: inline-block; margin-top: 6px; }
-  #recordRows { margin-top: 10px; font-size: .8rem; }
-  #recordRows table { width: 100%; border-collapse: collapse; }
-  #recordRows th, #recordRows td { text-align: left; padding: 4px 6px; border-bottom: 1px solid var(--line); }
-  #recordRows th { color: var(--muted); font-weight: 500; font-size: .7rem; text-transform: uppercase; letter-spacing: .08em; }
-  #recordRows td:nth-child(n+2), #recordRows th:nth-child(n+2) { text-align: right; }
+  #recordRows, #lbBox { margin-top: 10px; font-size: .8rem; }
+  #recordRows table, #lbBox table { width: 100%; border-collapse: collapse; }
+  #recordRows th, #recordRows td, #lbBox th, #lbBox td { text-align: left; padding: 4px 6px; border-bottom: 1px solid var(--line); }
+  #recordRows th, #lbBox th { color: var(--muted); font-weight: 500; font-size: .7rem; text-transform: uppercase; letter-spacing: .08em; }
+  #recordRows td:nth-child(n+2), #recordRows th:nth-child(n+2),
+  #lbBox td:nth-child(n+3), #lbBox th:nth-child(n+3) { text-align: right; }
   .lineup-tag { color: var(--muted); font-size: .72rem; }
   .rules-list { list-style: none; }
   .rules-list li { padding: 5px 0; font-size: .86rem; color: var(--text); }
@@ -275,6 +276,11 @@
   </div>
 
   <div class="panel">
+    <h2>Leaderboard <button id="lbBtn" style="float:right;padding:2px 10px;font-size:.72rem">refresh</button></h2>
+    <div id="lbBox" class="acct-hint">loading…</div>
+  </div>
+
+  <div class="panel">
     <h2>House rules</h2>
     <ul class="rules-list">
       <li><b>Order:</b> ranks 3 &lt; 4 &hellip; K &lt; A &lt; 2; suits ♦ &lt; ♣ &lt; ♥ &lt; ♠. Lowest dealt card opens and must be played.</li>
@@ -365,9 +371,11 @@
 
 const RANKS = ["3","4","5","6","7","8","9","10","J","Q","K","A","2"];
 const SUITS = ["♦","♣","♥","♠"]; // diamonds clubs hearts spades
-const AI_KINDS = ["ppo", "evo", "smart", "dmc", "ismcts", "decomp", "linear", "dumper", "lowest", "highest", "random"];
+const AI_KINDS = ["ppo", "ppo11", "evo", "smart", "dmc", "ismcts", "decomp", "linear", "dumper", "lowest", "highest", "random"];
+const PUBLIC_KINDS = ["ppo", "ppo11"];  // everyone picks between the two PPO lines
 const AI_LABEL = {
-  ppo: "PPO attention (trained)", evo: "Evo MLP (trained)", smart: "Smart (heuristic)",
+  ppo: "PPO v1 (champion)", ppo11: "PPO v1.1 (endgame-aware)",
+  evo: "Evo MLP (trained)", smart: "Smart (heuristic)",
   dmc: "DMC (trained)", ismcts: "ISMCTS (search)", decomp: "Decomposition",
   linear: "Linear (trained)", dumper: "Dumper", lowest: "Lowest card",
   highest: "Highest card", random: "Random",
@@ -413,14 +421,14 @@ function renderAiRows() {
     label.textContent = "AI " + i;
     const sel = document.createElement("select");
     sel.dataset.idx = i;
-    for (const k of admin ? AI_KINDS : ["ppo"]) {
+    const kinds = admin ? AI_KINDS : PUBLIC_KINDS;
+    for (const k of kinds) {
       const o = document.createElement("option");
       o.value = k;
       o.textContent = AI_LABEL[k] || k;
       sel.appendChild(o);
     }
-    sel.value = admin && AI_KINDS.includes(prev[i - 1]) ? prev[i - 1] : "ppo";
-    sel.disabled = !admin;  // players face the champion; admins pick freely
+    sel.value = kinds.includes(prev[i - 1]) ? prev[i - 1] : "ppo";
     row.append(label, sel);
     rows.appendChild(row);
   }
@@ -434,8 +442,8 @@ function renderAiRows() {
   note.textContent = admin
     ? "Admin: any lineup and table size; games still record under each " +
       "model's version stamp."
-    : "You play the current champion: the PPO set-attention net. " +
-      "Opponent selection is locked for now.";
+    : "Two trained tables: PPO v1 is the shipped champion; PPO v1.1 adds " +
+      "endgame awareness of opponents' card counts. Mix and match seats.";
 }
 
 $("numAiSeg").addEventListener("click", (e) => {
@@ -1064,12 +1072,40 @@ function recordGameToAccount(replay) {
     replay,
   };
   apiAuth("/api/record-game", { token: AUTH.token, game })
-    .then(() => refreshAccountStats())
+    .then(() => { refreshAccountStats(); loadLeaderboard(); })
     .catch(() => {});
 }
 
+/* Public leaderboard: every tester's record, visible to everyone. */
+async function loadLeaderboard() {
+  const box = $("lbBox");
+  let data = null;
+  try { data = await apiAuth("/api/leaderboard", {}); } catch {}
+  if (!data || !data.testers) {
+    box.textContent = "leaderboard unavailable";
+    return;
+  }
+  const sign = (x) => (x >= 0 ? "+" : "") + x;
+  const played = data.testers.filter((t) => t.games > 0);
+  if (!played.length) {
+    box.textContent = "no recorded games yet — sign in and be first on the board";
+    return;
+  }
+  const rows = played.map((t, i) => `
+    <tr${AUTH && t.username === AUTH.username ? ' style="color:var(--accent)"' : ""}>
+    <td>${i + 1}</td><td>${t.username}</td><td>${t.games}</td>
+    <td>${Math.round((100 * t.wins) / t.games)}%</td>
+    <td class="${t.total_score >= 0 ? "pos" : "neg"}">${sign(t.total_score)}</td>
+    <td>${sign((t.total_score / t.games).toFixed(1))}</td></tr>`).join("");
+  box.innerHTML = `<table>
+    <tr><th>#</th><th>player</th><th>games</th><th>win%</th><th>total</th><th>avg</th></tr>
+    ${rows}</table>`;
+}
+$("lbBtn").addEventListener("click", loadLeaderboard);
+
 renderAuth();
 refreshAccountStats();
+loadLeaderboard();
 
 // Resume an unfinished game after a refresh — no abandoning bad hands.
 (function resumeActiveGame() {
