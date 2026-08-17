@@ -499,6 +499,13 @@ def train_ppo(
     fresh_bar: bool = False,  # don't inherit the resumed checkpoint's bar:
     #   `out` records this run's own best (for new-version files where the
     #   old champion file stays untouched)
+    probe_vs: Optional[str] = None,  # measure candidates against 3 copies
+    #   of this checkpoint instead of the champions trio (training still
+    #   uses the normal diet — unlike exploit_target, only the metric
+    #   changes); best-saves then mean "best against this reference"
+    init_bar: Optional[float] = None,  # explicit starting bar for the
+    #   best-save gate (e.g. the current out-file's known score under a
+    #   new metric, so nothing worse ever overwrites it)
     note: Optional[str] = None,  # version label stored in saved meta
     verbose: bool = True,
 ):
@@ -518,6 +525,8 @@ def train_ppo(
         # a new version file that should record its own best.
         if not exploit_target and not fresh_bar:
             best_probe = float(payload.get("meta", {}).get("probe", -1e9))
+    if init_bar is not None:
+        best_probe = float(init_bar)
     opt = torch.optim.Adam(net.parameters(), lr=lr)
     rng = random.Random(seed)
     pool = mp.Pool(workers)
@@ -561,6 +570,10 @@ def train_ppo(
             paths.append(out)  # the best-so-far checkpoint plays too
         return paths
 
+    if probe_vs:
+        # Gate on the opponent that actually matters (e.g. the shipped v1
+        # champion): candidates are scored at a table of 3 copies of it.
+        champs = [PPOPolicy.load(probe_vs) for _ in range(3)]
     if exploit_target:
         # The exploitability probe: how much a dedicated adversary extracts.
         champs = [PPOPolicy.load(exploit_target) for _ in range(3)]
@@ -689,7 +702,9 @@ def train_ppo(
                 seed=it + 2,
             )
             tag = 6 if exploit_target else 5
-            label = "vs-target" if exploit_target else "vs-champions"
+            label = ("vs-target" if exploit_target
+                     else f"vs-{os.path.basename(probe_vs).split('.')[0]}"
+                     if probe_vs else "vs-champions")
             os.makedirs(os.path.dirname(progress_path), exist_ok=True)
             with open(progress_path, "a") as f:
                 f.write(
@@ -795,6 +810,11 @@ def main() -> None:
     parser.add_argument("--fresh-bar", action="store_true",
                         help="don't inherit the resumed checkpoint's best "
                              "bar; --out records this run's own best")
+    parser.add_argument("--probe-vs", default=None,
+                        help="measure candidates against 3 copies of this "
+                             "checkpoint instead of the champions trio")
+    parser.add_argument("--init-bar", type=float, default=None,
+                        help="explicit starting bar for the best-save gate")
     parser.add_argument("--note", default=None,
                         help="version label stored in the saved meta")
     args = parser.parse_args()
@@ -809,6 +829,8 @@ def main() -> None:
         confirm_games=args.confirm_games,
         exploit_target=args.exploit_target,
         fresh_bar=args.fresh_bar,
+        probe_vs=args.probe_vs,
+        init_bar=args.init_bar,
         note=args.note,
     )
 
