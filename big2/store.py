@@ -59,7 +59,9 @@ _SCHEMA = [
 
 class Store:
     def __init__(self, url: Optional[str] = None):
-        url = url or os.environ.get("DATABASE_URL") or ""
+        # DATABASE_URL: Neon/most providers; POSTGRES_URL: Vercel Postgres.
+        url = (url or os.environ.get("DATABASE_URL")
+               or os.environ.get("POSTGRES_URL") or "")
         self.persistent = True
         if url.startswith(("postgres://", "postgresql://")):
             import psycopg2  # optional dependency

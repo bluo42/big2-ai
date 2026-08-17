@@ -53,6 +53,15 @@ Note: because the client holds the full state (required for serverless),
 a determined player can inspect opponents' hands in dev tools — fine for
 a demo and exactly what the admin explorer wants; not for money games.
 
+**Durable accounts on Vercel** (running scores + saved games): the app
+uses SQLite locally and Postgres when a `DATABASE_URL` (or
+`POSTGRES_URL`) env var is present. In the Vercel dashboard: your
+project → **Storage** → **Create Database** → pick **Neon (Postgres)**
+→ connect it to the project (it injects `DATABASE_URL` automatically)
+→ redeploy. Tables are created on first use; no migrations to run.
+Without a database the deployed site runs demo-mode stats that reset
+between deploys.
+
 ### Game explorer (`/admin`)
 
 Watch how the strategies actually play: pick 2-4 agents, simulate games,

@@ -77,9 +77,11 @@
   #recordRows th { color: var(--muted); font-weight: 500; font-size: .7rem; text-transform: uppercase; letter-spacing: .08em; }
   #recordRows td:nth-child(n+2), #recordRows th:nth-child(n+2) { text-align: right; }
   .lineup-tag { color: var(--muted); font-size: .72rem; }
-  .rule { display: flex; align-items: flex-start; gap: 10px; padding: 7px 0; cursor: pointer; }
-  .rule input { margin-top: 4px; accent-color: var(--accent); width: 15px; height: 15px; }
-  .rule small { display: block; color: var(--muted); }
+  .rules-list { list-style: none; }
+  .rules-list li { padding: 5px 0; font-size: .86rem; color: var(--text); }
+  .rules-list li b { color: var(--accent); font-weight: 600; }
+  .ai-note { color: var(--muted); font-size: .78rem; margin-top: 8px; }
+  select:disabled { opacity: .55; cursor: not-allowed; }
   #startBtn { width: 100%; padding: 13px; font-size: 1.05rem; }
 
   /* ---------- game ---------- */
@@ -273,26 +275,12 @@
 
   <div class="panel">
     <h2>House rules</h2>
-    <label class="rule">
-      <input type="checkbox" id="rTriples">
-      <span>Lone triples playable<small>three of a kind becomes its own class, compared by rank</small></span>
-    </label>
-    <label class="rule">
-      <input type="checkbox" id="rPassLocks">
-      <span>Passing locks you out of the trick<small>off (house rule) = a pass only skips your turn; you may play when it comes back around</small></span>
-    </label>
-    <label class="rule">
-      <input type="checkbox" id="rFlushSuit" checked>
-      <span>Flushes compare by suit first<small>any spade flush beats any heart flush; off = top ranks compare first (poker style)</small></span>
-    </label>
-    <label class="rule">
-      <input type="checkbox" id="rTiered" checked>
-      <span>Card-count multipliers<small>losers with 10&ndash;12 cards pay double, all 13 pay triple</small></span>
-    </label>
-    <label class="rule">
-      <input type="checkbox" id="rTwo">
-      <span>2-holder penalty<small>holding a 2 at game end adds the base payment again</small></span>
-    </label>
+    <ul class="rules-list">
+      <li><b>Order:</b> ranks 3 &lt; 4 &hellip; K &lt; A &lt; 2; suits ♦ &lt; ♣ &lt; ♥ &lt; ♠. Lowest dealt card opens and must be played.</li>
+      <li><b>Plays:</b> singles, pairs, and 5-card poker hands — no lone triples. Straights by top card then its suit; flushes by suit first; full houses by the triple.</li>
+      <li><b>Passing:</b> soft pass — passing only skips your turn; you may still play when the trick comes back around. A full round of passes ends the trick.</li>
+      <li><b>Payout:</b> losers pay the winner their cards remaining; 10&ndash;12 cards pay <b>double</b>, all 13 pay <b>triple</b>.</li>
+    </ul>
   </div>
 
   <button id="startBtn" class="primary">Deal cards</button>
@@ -398,16 +386,23 @@ function renderAiRows() {
     label.textContent = "AI " + i;
     const sel = document.createElement("select");
     sel.dataset.idx = i;
-    for (const kind of AI_KINDS) {
-      const o = document.createElement("option");
-      o.value = kind;
-      o.textContent = AI_LABEL[kind];
-      sel.appendChild(o);
-    }
-    // Default: our current top three agents.
-    sel.value = ["ppo", "linear", "evo"][i - 1] || "smart";
+    const o = document.createElement("option");
+    o.value = "ppo";
+    o.textContent = AI_LABEL.ppo;
+    sel.appendChild(o);
+    sel.value = "ppo";
+    sel.disabled = true;  // informative for now: every seat is the champion
     row.append(label, sel);
     rows.appendChild(row);
+  }
+  if (!$("aiNote")) {
+    const note = document.createElement("div");
+    note.id = "aiNote";
+    note.className = "ai-note";
+    note.textContent =
+      "You play the current champion: the PPO set-attention net. " +
+      "Opponent selection is locked for now.";
+    rows.parentElement.appendChild(note);
   }
 }
 
@@ -420,15 +415,10 @@ $("numAiSeg").addEventListener("click", (e) => {
 });
 
 function currentSettings() {
+  // House rules are fixed; the server defaults ARE the house rules.
   return {
     num_ai: numAi,
     ai: [...$("aiRows").querySelectorAll("select")].map((s) => s.value),
-    rules: {
-      allow_triples: $("rTriples").checked,
-      pass_locks: $("rPassLocks").checked,
-      flush_rank_first: !$("rFlushSuit").checked,
-    },
-    scoring: { tiered: $("rTiered").checked, two: $("rTwo").checked },
   };
 }
 
