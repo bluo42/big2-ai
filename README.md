@@ -374,6 +374,32 @@ mid-table in this broader field. `wang_rej_a` (the last rejected
 breakout) edging `wang_best` is within the ±0.1 cell noise. The
 scripted anchors are pure food for every trained line.
 
+**Trained-only rerun** — same 25k scale without the scripted anchors
+(all 35 4-of-7 tables x 714 = 24,990 games; 14,280 games/model, 7,140
+per pair, cells ±0.08). With no scripted food to farm, the shipped
+model takes the top seat outright and the whole v1 line goes negative:
+
+```
+model           games  avg/game   win%     total
+wang_best       14280     +0.28    26%     +3933
+wang_rej_a      14280     +0.25    27%     +3641
+v1_exploiter    14280     +0.14    24%     +2014
+wang_rej_b      14280     +0.04    28%      +502
+v1_champ        14280     -0.13    25%     -1904
+v1_prev         14280     -0.18    25%     -2634
+cem_linear      14280     -0.39    20%     -5552
+
+row avg score/game in games that also seat col (diag: overall avg):
+               wang_be wang_re v1_expl wang_re v1_cham v1_prev cem_lin
+wang_best        +0.28   +0.26   +0.20   +0.21   +0.33   +0.33   +0.33
+wang_rej_a       +0.32   +0.25   +0.26   +0.27   +0.14   +0.37   +0.17
+v1_exploiter     +0.13   +0.06   +0.14   +0.27   +0.10   +0.04   +0.23
+wang_rej_b       +0.00   +0.02   -0.08   +0.04   +0.07   +0.04   +0.16
+v1_champ         -0.23   -0.21   -0.13   -0.13   -0.13   -0.12   +0.02
+v1_prev          -0.24   -0.19   -0.19   -0.24   -0.12   -0.18   -0.13
+cem_linear       -0.54   -0.45   -0.34   -0.46   -0.26   -0.29   -0.39
+```
+
 ### Current results under the house rules (soft pass, tiered, seed 17)
 
 All numbers below use the current defaults. Baselines, 1,000 games:
