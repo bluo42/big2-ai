@@ -142,8 +142,17 @@ frozen copies of it, with opponent profiling — extracts only
 **+0.39/game** (1,000-game measurement) while remaining an honest
 player (+1.96 vs scripted baselines). Best-response extraction under
 half a point per game means the champion's population training left few
-seams; the exploiter now joins the opponent pool for future league
-rounds, which is the PSRO loop closing.
+seams.
+
+**Final PSRO round**: the loop then closed — 50k more games with the
+exploiter *in* the training pool (alongside the CEM linear, dumper,
+frozen past selves, and self-play), a dual-trigger gate (champions bar
+or a vs-diet high-water breakout earns a 480-game confirmation retest),
+and merit snapshots feeding every breakout candidate back into the diet
+as an opponent. Across ~150k total PPO-era games, five challengers
+earned retests (confirming +1.43 to +1.97) and none beat the champion's
+confirmed +3.17 — it survived its own best adversary and ships as the
+final `ppo` in the app, byte-identical in the torch and numpy paths.
 
 ## Beliefs: probability maps of hidden hands
 
