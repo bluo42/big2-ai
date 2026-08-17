@@ -506,6 +506,8 @@ def train_ppo(
         # The exploitability probe: how much a dedicated adversary extracts.
         champs = [PPOPolicy.load(exploit_target) for _ in range(3)]
 
+    diet_best = -1e9  # high-water mark for the vs-diet probe series
+
     for it in range(1, iters + 1):
         blob = pickle.dumps(
             {"state_dict": net.state_dict(), "d_model": d_model, "heads": heads}
@@ -647,7 +649,35 @@ def train_ppo(
             )
             net.train()
             score = vs_champ if vs_champ == vs_champ else vs_base
-            if score > best_probe:
+            # Dual trigger: beating the shipping bar OR breaking the diet
+            # high-water mark earns a confirmation retest (a strong diet
+            # result can reveal improvement the noisy champions probe
+            # missed).  Shipping still requires confirming vs champions.
+            diet_breakout = vs_diet > diet_best + 0.25
+            diet_best = max(diet_best, vs_diet)
+            if diet_breakout and score <= best_probe:
+                print(
+                    f"[ppo] diet breakout ({vs_diet:+.2f}) -> retest",
+                    flush=True,
+                )
+            if score > best_probe or diet_breakout:
+                # Merit snapshot: a breakout candidate is a new play style
+                # worth beating — freeze it into the training diet now,
+                # whatever the confirmation decides about shipping it.
+                bpath = os.path.join(snap_dir, f"breakout_{it}.pt")
+                _atomic_save(
+                    {"state_dict": net.state_dict(), "d_model": d_model,
+                     "heads": heads},
+                    bpath,
+                )
+                breakouts = sorted(
+                    (os.path.join(snap_dir, f) for f in os.listdir(snap_dir)
+                     if f.startswith("breakout_")),
+                    key=os.path.getmtime,
+                )
+                for stale in breakouts[:-2]:
+                    os.remove(stale)
+
                 # Two-stage gate: a 120-game probe is +-1 noisy, so a
                 # would-be best must confirm on an independent larger
                 # re-test; the confirmed number is what gets recorded.
