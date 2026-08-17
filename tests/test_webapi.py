@@ -80,12 +80,13 @@ class TestHandlers(unittest.TestCase):
 
     def test_two_ppo_lines_are_distinct_kinds(self):
         self.assertIn("ppo11", webapi.AI_KINDS)
-        # each line stamps under its own name, so recorded games stay
-        # attributable to the exact model version at the table
+        # each line stamps under its own display name, so recorded games
+        # stay attributable to the exact model version at the table
         self.assertTrue(webapi.model_stamp("ppo").startswith("ppo@"))
-        self.assertTrue(webapi.model_stamp("ppo11").startswith("ppo11@"))
+        self.assertTrue(webapi.model_stamp("ppo11").startswith("WangBot_v1@"))
         view = webapi.new_game({"num_ai": 1, "ai": ["ppo11"], "seed": 11})
         self.assertEqual(view["players"][1]["ai"], "ppo11")
+        self.assertIn("WangBot_v1", view["players"][1]["name"])
 
     def test_assist_surface_gated_on_public_deploys(self):
         from big2.server import app

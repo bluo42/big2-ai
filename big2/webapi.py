@@ -134,6 +134,10 @@ AI_KINDS = [
     "dumper", "lowest", "highest", "random",
 ]
 
+# Public display names where they differ from the internal kind (the
+# kind string stays stable so serialized games keep deserializing).
+KIND_LABEL = {"ppo11": "WangBot_v1"}
+
 _POLICY_FILES = {
     "ppo": "ppo_attn.pt",
     "ppo11": "ppo_attn_v11.pt",
@@ -144,20 +148,21 @@ _POLICY_FILES = {
 
 
 def model_stamp(kind: Optional[str]) -> str:
-    """Time-stamped model identity, e.g. 'ppo@20260817-1755', so scores
-    stay attributable to the exact model version that was playing."""
+    """Time-stamped model identity, e.g. 'WangBot_v1@20260818-0114', so
+    scores stay attributable to the exact model version that was playing."""
     if kind is None:
         return "you"
+    label = KIND_LABEL.get(kind, kind)
     fname = _POLICY_FILES.get(kind)
     if fname is None:
-        return f"{kind}@builtin"
+        return f"{label}@builtin"
     import time as _time
 
     try:
         mtime = os.path.getmtime(_policy_path(fname))
-        return f"{kind}@{_time.strftime('%Y%m%d-%H%M', _time.gmtime(mtime))}"
+        return f"{label}@{_time.strftime('%Y%m%d-%H%M', _time.gmtime(mtime))}"
     except OSError:
-        return f"{kind}@builtin"
+        return f"{label}@builtin"
 
 
 import os  # noqa: E402  (used by model_stamp/_policy_path)
@@ -263,7 +268,10 @@ def deserialize_game(d: Dict) -> Big2Game:
 
 def _names(ai_kinds: Dict[int, Optional[str]]) -> Dict[int, str]:
     return {
-        seat: "You" if kind is None else f"AI {seat} ({kind})"
+        seat: (
+            "You" if kind is None
+            else f"AI {seat} ({KIND_LABEL.get(kind, kind)})"
+        )
         for seat, kind in ai_kinds.items()
     }
 

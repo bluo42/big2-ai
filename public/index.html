@@ -382,7 +382,7 @@ const SUITS = ["♦","♣","♥","♠"]; // diamonds clubs hearts spades
 const AI_KINDS = ["ppo", "ppo11", "evo", "smart", "dmc", "ismcts", "decomp", "linear", "dumper", "lowest", "highest", "random"];
 const PUBLIC_KINDS = ["ppo", "ppo11"];  // everyone picks between the two PPO lines
 const AI_LABEL = {
-  ppo: "PPO v1 (champion)", ppo11: "PPO v1.1 (endgame-aware)",
+  ppo: "PPO v1 (champion)", ppo11: "WangBot_v1 (endgame-aware)",
   evo: "Evo MLP (trained)", smart: "Smart (heuristic)",
   dmc: "DMC (trained)", ismcts: "ISMCTS (search)", decomp: "Decomposition",
   linear: "Linear (trained)", dumper: "Dumper", lowest: "Lowest card",
@@ -436,7 +436,7 @@ function renderAiRows() {
       o.textContent = AI_LABEL[k] || k;
       sel.appendChild(o);
     }
-    sel.value = kinds.includes(prev[i - 1]) ? prev[i - 1] : "ppo";
+    sel.value = kinds.includes(prev[i - 1]) ? prev[i - 1] : "ppo11";
     row.append(label, sel);
     rows.appendChild(row);
   }
@@ -450,8 +450,9 @@ function renderAiRows() {
   note.textContent = admin
     ? "Admin: any lineup and table size; games still record under each " +
       "model's version stamp."
-    : "Two trained tables: PPO v1 is the shipped champion; PPO v1.1 adds " +
-      "endgame awareness of opponents' card counts. Mix and match seats.";
+    : "Default table: WangBot_v1, trained with endgame awareness of " +
+      "opponents' card counts. PPO v1 is the previous champion - mix " +
+      "and match seats.";
 }
 
 $("numAiSeg").addEventListener("click", (e) => {
@@ -1176,7 +1177,7 @@ loadLeaderboard();
   let stored = null;
   try { stored = JSON.parse(localStorage.getItem(ACTIVE_KEY) || "null"); } catch {}
   if (!stored || stored.phase !== "playing") return;
-  lastSettings = { num_ai: 3, ai: ["ppo", "ppo", "ppo"] };
+  lastSettings = { num_ai: 3, ai: ["ppo11", "ppo11", "ppo11"] };
   $("setup").classList.add("hidden");
   $("game").classList.add("active");
   seenHistory = stored.history.length;  // no replay animation on resume

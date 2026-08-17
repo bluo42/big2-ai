@@ -74,13 +74,17 @@ public deployments. Local dev keeps everything: `python -m big2.server`
 enables it, or set `BIG2_ADMIN=1` on a private deployment.
 
 Everyone sees the **public leaderboard** on the play page — each
-tester's games, win rate, and total/average score — and everyone picks
-their table from **two trained lines per seat**: `PPO v1`, the shipped
-champion (`ppo_attn.pt`, never overridden), and `PPO v1.1`, the
-endgame-aware line trained with explicit opponent-card-count danger
-features (`ppo_attn_v11.pt`, refreshed as its training run confirms
-better checkpoints). Games record under each model's own version stamp,
-so records against the two lines stay separate.
+tester's games, win rate, and total/average score, filterable by which
+model the games were against, with sortable columns — and everyone
+picks their table from **two trained lines per seat**. The default is
+**WangBot_v1** (`ppo_attn_v11.pt`, internal kind `ppo11`): the
+endgame-aware line trained to 200k games with explicit
+opponent-card-count danger features, its final checkpoint selected by a
+confirmed **+1.28/game head-to-head vs v1** (480 games, seated alone
+against three v1 copies; in the paired 2×WangBot vs 2×v1 format the two
+lines are statistically even). `PPO v1` (`ppo_attn.pt`, never
+overridden) remains selectable, and games record under each model's own
+version stamp, so records against the two lines stay separate.
 
 **Admin accounts** get the full surface on the public deploy too: sign
 in as an admin username (default `brandonluo`; override with a
