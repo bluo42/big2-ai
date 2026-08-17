@@ -62,7 +62,18 @@ project → **Storage** → **Create Database** → pick **Neon (Postgres)**
 Without a database the deployed site runs demo-mode stats that reset
 between deploys.
 
-### Game explorer (`/admin`)
+### Public-play mode
+
+Deployed games are fair by construction: a started game **persists
+through refreshes** and must be finished (no abandoning bad hands — the
+New game button unlocks at game end), the end-of-game popup shows your
+**running record** after every game (account totals when signed in,
+device totals otherwise — never reset), and the assist surface (hints,
+belief panel, the explorer, and their API endpoints) is **disabled** on
+public deployments. Local dev keeps everything: `python -m big2.server`
+enables it, or set `BIG2_ADMIN=1` on a private deployment.
+
+### Game explorer (`/admin`, dev-only)
 
 Watch how the strategies actually play: pick 2-4 agents, simulate games,
 and step through replays with **every hand exposed** — action-by-action

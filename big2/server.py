@@ -14,14 +14,22 @@ memory and runs identically on a laptop and on serverless hosting
 from __future__ import annotations
 
 import argparse
+import os
 
-from flask import Flask, jsonify, request
+from flask import Flask, abort, jsonify, request, send_file
 
 from big2 import webapi
 
 # Pages live in the repo-level public/ dir: Vercel serves them from its
-# edge (cleanUrls maps /admin -> admin.html); locally Flask serves them.
+# edge; locally Flask serves them.
 app = Flask(__name__, static_folder="../public", static_url_path="")
+
+
+def _admin_enabled() -> bool:
+    """Assist/analysis surface (explorer, hints, beliefs, simulate) is
+    dev-only: on for `python -m big2.server` and when BIG2_ADMIN is set,
+    off on public deployments so players get no unfair help."""
+    return bool(app.config.get("BIG2_ADMIN") or os.environ.get("BIG2_ADMIN"))
 
 
 def _handle(fn):
@@ -38,7 +46,12 @@ def index():
 
 @app.route("/admin")
 def admin():
-    return app.send_static_file("admin.html")
+    if not _admin_enabled():
+        abort(404)
+    return send_file(
+        os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                     "admin_page.html")
+    )
 
 
 @app.route("/api/new", methods=["POST"])
@@ -62,21 +75,29 @@ def pass_turn():
 
 @app.route("/api/hint", methods=["POST"])
 def hint():
+    if not _admin_enabled():
+        abort(404)
     return _handle(webapi.hint)
 
 
 @app.route("/api/beliefs", methods=["POST"])
 def beliefs():
+    if not _admin_enabled():
+        abort(404)
     return _handle(webapi.beliefs)
 
 
 @app.route("/api/simulate", methods=["POST"])
 def simulate():
+    if not _admin_enabled():
+        abort(404)
     return _handle(webapi.simulate)
 
 
 @app.route("/api/progress")
 def progress():
+    if not _admin_enabled():
+        abort(404)
     return jsonify(webapi.progress())
 
 
@@ -106,6 +127,7 @@ def main() -> None:
     parser.add_argument("--port", type=int, default=8080)
     parser.add_argument("--debug", action="store_true")
     args = parser.parse_args()
+    app.config["BIG2_ADMIN"] = True  # local dev: explorer + assists on
     print(f"Big 2 UI: http://{args.host}:{args.port}  (admin: /admin)")
     app.run(host=args.host, port=args.port, debug=args.debug)
 

@@ -294,7 +294,6 @@
     <span class="chip" id="chipRules"></span>
     <span class="chip" id="chipScoring"></span>
     <span class="spacer"></span>
-    <button id="beliefBtn">&#x1f9e0; Beliefs</button>
     <button id="newGameBtn">&#x21bb; New game</button>
   </div>
 
@@ -314,7 +313,6 @@
           <button data-s="suit">Suit</button>
         </div>
         <span class="spacer"></span>
-        <button id="hintBtn">&#x1f4a1; Hint</button>
         <button id="passBtn" class="warn">Pass</button>
         <button id="playBtn" class="good">Play</button>
       </div>
@@ -334,10 +332,10 @@
     <h2 id="overTitle"></h2>
     <div class="sub" id="overSub"></div>
     <table id="scoreTable"></table>
+    <div id="overTally" style="color:var(--muted);font-size:.85rem;margin-bottom:16px;min-height:1.2em"></div>
     <div class="btns">
       <button class="primary" id="againBtn">Play again</button>
-      <button id="setupBtn">Change rules</button>
-      <button onclick="location.href='/admin'">Review in explorer</button>
+      <button id="setupBtn">Back to lobby</button>
     </div>
   </div>
 </div>
@@ -642,12 +640,8 @@ async function refreshBeliefs() {
   renderBeliefs();
 }
 
-$("beliefBtn").addEventListener("click", () => {
-  beliefsOn = !beliefsOn;
-  $("beliefBtn").style.borderColor = beliefsOn ? "var(--accent)" : "";
-  $("beliefBtn").style.color = beliefsOn ? "var(--accent)" : "";
-  refreshBeliefs();
-});
+// Beliefs assist is disabled on the public app (dev builds re-enable it
+// server-side; the panel machinery stays for that).
 
 function renderTable(combo, byName) {
   const el = $("tableCards");
@@ -714,7 +708,6 @@ function updateControls() {
     ? "Play " + (TYPE_LABEL[match.type] || match.type)
     : "Play";
   $("passBtn").disabled = !myTurn || !S.can_pass;
-  $("hintBtn").disabled = !myTurn;
 
   if (!myTurn) return;
   if (S.first_play) {
@@ -748,6 +741,18 @@ async function applyState(state) {
   const prev = S;
   S = state;
   FS = state.full_state;
+  // Persist immediately (not after the animation): a refresh at any
+  // moment resumes the game instead of abandoning it.
+  try {
+    if (state.phase === "playing") {
+      localStorage.setItem(ACTIVE_KEY, JSON.stringify(state));
+    } else {
+      localStorage.removeItem(ACTIVE_KEY);
+    }
+  } catch {}
+  $("newGameBtn").disabled = state.phase === "playing";
+  $("newGameBtn").title = state.phase === "playing"
+    ? "finish the current game first" : "";
   $("chipRules").textContent = ruleChip(state.rules);
   $("chipScoring").textContent = "payout: " + state.scoring;
 
@@ -835,6 +840,24 @@ function ruleChip(r) {
 /* Every finished game is logged locally (browser storage) as a full
    replay — browse them with all hands exposed in the /admin explorer. */
 const PLAYED_LOG_KEY = "big2_played_games";
+const ACTIVE_KEY = "big2_active_game";
+const TALLY_KEY = "big2_tally";  // aggregate record: never deleted
+
+function localTally() {
+  try {
+    return JSON.parse(localStorage.getItem(TALLY_KEY)
+      || '{"games":0,"wins":0,"total":0}');
+  } catch { return { games: 0, wins: 0, total: 0 }; }
+}
+
+function bumpLocalTally(score, won) {
+  const t = localTally();
+  t.games += 1;
+  t.wins += won ? 1 : 0;
+  t.total += score;
+  try { localStorage.setItem(TALLY_KEY, JSON.stringify(t)); } catch {}
+  return t;
+}
 
 function logFinishedGame() {
   let replay = null;
@@ -950,7 +973,36 @@ function recordGameToAccount(replay) {
 renderAuth();
 refreshAccountStats();
 
+// Resume an unfinished game after a refresh — no abandoning bad hands.
+(function resumeActiveGame() {
+  let stored = null;
+  try { stored = JSON.parse(localStorage.getItem(ACTIVE_KEY) || "null"); } catch {}
+  if (!stored || stored.phase !== "playing") return;
+  lastSettings = { num_ai: 3, ai: ["ppo", "ppo", "ppo"] };
+  $("setup").classList.add("hidden");
+  $("game").classList.add("active");
+  seenHistory = stored.history.length;  // no replay animation on resume
+  applyState(stored);
+})();
+
 function showGameOver() {
+  // Running record after every game: local tally immediately, account
+  // totals layered on once the server confirms the recorded game.
+  const sign = (x) => (x >= 0 ? "+" : "") + x;
+  const myScore = S.scores[String(S.human_seat)];
+  const tally = bumpLocalTally(myScore, S.winner === S.human_seat);
+  $("overTally").textContent =
+    `Your record: ${tally.games} games · ${tally.wins} wins · total ${sign(tally.total)}`;
+  if (AUTH) {
+    setTimeout(async () => {
+      try {
+        const stats = await apiAuth("/api/stats", { token: AUTH.token });
+        $("overTally").textContent =
+          `${AUTH.username}: ${stats.games} games · ${stats.wins} wins · ` +
+          `total ${sign(stats.total_score)}`;
+      } catch {}
+    }, 700);
+  }
   const won = S.winner === S.human_seat;
   $("overTitle").textContent = won ? "\u{1f3c6} You win!" : nameOf(S.winner) + " wins";
   $("overTitle").style.color = won ? "var(--accent-2)" : "var(--text)";
@@ -997,29 +1049,6 @@ $("passBtn").addEventListener("click", async () => {
   // so it can't be a Vercel function filename).
   const state = await post("/api/play", { state: FS, pass: true });
   if (state) { selected.clear(); await applyState(state); }
-});
-
-$("hintBtn").addEventListener("click", async () => {
-  if (busy) return;
-  const res = await fetch("/api/hint", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ state: FS }),
-  });
-  if (!res.ok) return;
-  const hintData = await res.json();
-  selected.clear();
-  if (hintData.cards) for (const c of hintData.cards) selected.add(c);
-  renderHand();
-  if (!hintData.cards) {
-    setStatus("Hint: <b>pass</b> and save your hand");
-  } else {
-    setStatus(`Hint: play <span class="combo-name">${TYPE_LABEL[hintData.type] || hintData.type}</span>`);
-    for (const el of $("hand").children) {
-      if (selected.has(+el.dataset.id)) el.classList.add("hinted");
-    }
-  }
-  updateControls();
 });
 
 $("sortSeg").addEventListener("click", (e) => {

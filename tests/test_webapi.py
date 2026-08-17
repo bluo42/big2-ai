@@ -78,6 +78,29 @@ class TestHandlers(unittest.TestCase):
         out = webapi.progress()
         self.assertIn("rows", out)
 
+    def test_assist_surface_gated_on_public_deploys(self):
+        from big2.server import app
+
+        c = app.test_client()
+        old = app.config.get("BIG2_ADMIN")
+        try:
+            app.config["BIG2_ADMIN"] = False
+            self.assertEqual(c.get("/admin").status_code, 404)
+            self.assertEqual(c.post("/api/hint", json={}).status_code, 404)
+            self.assertEqual(c.post("/api/beliefs", json={}).status_code, 404)
+            self.assertEqual(c.post("/api/simulate", json={}).status_code, 404)
+            self.assertEqual(c.get("/api/progress").status_code, 404)
+            # core play surface stays open
+            self.assertEqual(
+                c.post("/api/new", json={"num_ai": 1, "ai": ["lowest"]}).status_code,
+                200,
+            )
+            app.config["BIG2_ADMIN"] = True
+            self.assertEqual(c.get("/admin").status_code, 200)
+            self.assertEqual(c.get("/api/progress").status_code, 200)
+        finally:
+            app.config["BIG2_ADMIN"] = old
+
 
 if __name__ == "__main__":
     unittest.main()
