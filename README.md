@@ -187,7 +187,13 @@ There is also `linear` — a CEM-trained move scorer over hand-crafted
 features (`big2/rl.py`) that predates the ladder and remains a strong
 reference.
 
-## Results (seat-rotated, seed 1; cells: avg score/game, win rate)
+## Results (cells: avg score/game, win rate)
+
+Current-rule results are in "[Current results under the house
+rules](#current-results-under-the-house-rules-soft-pass-tiered-seed-17)"
+below; the tables immediately following are **historical** — measured
+under the original pass-lock-out rule (seat-rotated, seed 1) and kept
+for the record of how each ladder step changed the standings.
 
 Baselines, 1,000 games/variant:
 
@@ -235,7 +241,45 @@ ISMCTS (100 sims), 200 games, tiered — the strongest no-training agent:
     tiered |       +1.60 ( 32%) |       +0.33 ( 27%) |       -1.65 ( 22%) |       -0.28 ( 20%)
 ```
 
-### The 1,000,000-game evolution run
+### Current results under the house rules (soft pass, tiered, seed 17)
+
+All numbers below use the current defaults. Baselines, 1,000 games:
+
+```
+   variant |             lowest |            highest |             dumper |              smart
+----------------------------------------------------------------------------------------------
+    tiered |       -0.82 ( 23%) |       -4.43 (  4%) |       +3.12 ( 37%) |       +2.13 ( 37%)
+```
+
+Strong lineup, 1,000 games — `linear`/`evo` are the soft-pass league CEM
+champion and the anchored-evolution champion:
+
+```
+   variant |              smart |             decomp |             linear |                evo
+----------------------------------------------------------------------------------------------
+    tiered |       -1.43 ( 21%) |       -1.30 ( 26%) |       +2.32 ( 30%) |       +0.41 ( 24%)
+```
+
+### The anchored 1,000,000-game evolution run (soft pass, v4 features)
+
+Second million-game run, this time with the previous champions riding as
+**anchor opponents** inside every island's matchmaking, encoding v4
+(opponent modeling + holding guesses + decomposition deltas +
+payment-tier risk), a 4-layer architecture in the gene pool, and
+**plateau probes every 25k games** (chart them at `/admin`). The probe
+story: islands reach scripted-baseline parity ~100k games in, close a
+3.5-point anchor gap to parity by ~150k, break above the anchors
+(+1.3 to +1.7 at peaks) around 200k, then **oscillate around anchor
+parity** — a visible plateau at this model capacity. Island 2's
+[128, 64] champion won the playoff (+0.67/game) and ships as `evo`: it
+beats every agent in the repo except the CEM linear move-scorer, which
+keeps the overall crown (+2.32 vs +0.41 in the shared table above).
+The plateau at linear-parity across two million-game runs is the
+clearest signal yet that the next step is a capacity/algorithm jump
+(torch MLP with more data per parameter, PPO with a set head, learned
+belief head), not more games at this scale.
+
+### The first 1,000,000-game evolution run
 
 4 islands × 250k games (60% of them 1v1), populations of MLP Q-agents
 with evolved hyperparameters, ~75 minutes on 4 cores. Island 2's
