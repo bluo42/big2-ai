@@ -344,7 +344,8 @@ function renderAiRows() {
       o.textContent = AI_LABEL[kind];
       sel.appendChild(o);
     }
-    sel.value = i === 1 ? "evo" : "smart";
+    // Default: our current top three agents.
+    sel.value = ["ppo", "linear", "evo"][i - 1] || "smart";
     row.append(label, sel);
     rows.appendChild(row);
   }

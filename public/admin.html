@@ -236,7 +236,7 @@ function renderAgentRows() {
       o.value = k; o.textContent = k;
       sel.appendChild(o);
     }
-    sel.value = ["evo", "smart", "decomp", "dmc"][i] || "smart";
+    sel.value = ["ppo", "linear", "evo", "smart"][i] || "smart";
     holder.appendChild(sel);
   }
 }
