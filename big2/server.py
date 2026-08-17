@@ -32,6 +32,20 @@ def _admin_enabled() -> bool:
     return bool(app.config.get("BIG2_ADMIN") or os.environ.get("BIG2_ADMIN"))
 
 
+def _admin_request_ok() -> bool:
+    """The dev switch, or a signed-in admin account (e.g. the project
+    owner on the public deploy): token via X-Big2-Token header, ?token=
+    query, or the JSON body."""
+    if _admin_enabled():
+        return True
+    token = (
+        request.headers.get("X-Big2-Token")
+        or request.args.get("token")
+        or (request.get_json(force=True, silent=True) or {}).get("token")
+    )
+    return webapi.is_admin_token(token)
+
+
 def _handle(fn):
     try:
         return jsonify(fn(request.get_json(force=True, silent=True) or {}))
@@ -46,7 +60,7 @@ def index():
 
 @app.route("/admin")
 def admin():
-    if not _admin_enabled():
+    if not _admin_request_ok():
         abort(404)
     return send_file(
         os.path.join(os.path.dirname(os.path.abspath(__file__)),
@@ -75,30 +89,37 @@ def pass_turn():
 
 @app.route("/api/hint", methods=["POST"])
 def hint():
-    if not _admin_enabled():
+    if not _admin_request_ok():
         abort(404)
     return _handle(webapi.hint)
 
 
 @app.route("/api/beliefs", methods=["POST"])
 def beliefs():
-    if not _admin_enabled():
+    if not _admin_request_ok():
         abort(404)
     return _handle(webapi.beliefs)
 
 
 @app.route("/api/simulate", methods=["POST"])
 def simulate():
-    if not _admin_enabled():
+    if not _admin_request_ok():
         abort(404)
     return _handle(webapi.simulate)
 
 
 @app.route("/api/progress")
 def progress():
-    if not _admin_enabled():
+    if not _admin_request_ok():
         abort(404)
     return jsonify(webapi.progress())
+
+
+@app.route("/api/leaderboard", methods=["POST"])
+def leaderboard():
+    if not _admin_request_ok():
+        abort(404)
+    return _handle(webapi.leaderboard)
 
 
 @app.route("/api/register", methods=["POST"])

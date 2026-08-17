@@ -77,6 +77,35 @@ class TestStore(unittest.TestCase):
         self.assertEqual(row["replay"]["actions"][0]["cards"], [0])
 
 
+class TestLeaderboard(unittest.TestCase):
+    def test_leaderboard_rows_and_totals(self):
+        with tempfile.TemporaryDirectory() as d:
+            store = Store(url=os.path.join(d, "lb.db"))
+            t1 = store.register("erin", "pass123")
+            store.register("frank", "pass123")  # never plays
+            uid = store.auth(t1)[0]
+            for score, won in ((8, True), (-3, False)):
+                store.record_game(uid, {
+                    "num_players": 4, "lineup": ["ppo@x"], "rules": {},
+                    "scoring": "tiered", "user_seat": 0, "user_score": score,
+                    "won": won, "replay": {},
+                })
+            board = store.leaderboard()
+            self.assertEqual(len(board["testers"]), 2)
+            top = board["testers"][0]
+            self.assertEqual(top["username"], "erin")
+            self.assertEqual(top["games"], 2)
+            self.assertEqual(top["wins"], 1)
+            self.assertEqual(top["total_score"], 5)
+            idle = board["testers"][1]
+            self.assertEqual(idle["games"], 0)
+            self.assertIsNone(idle["last_ts"])
+            self.assertEqual(board["totals"],
+                             {"games": 2, "human_wins": 1, "human_score": 5})
+            # the CLI report renders from the same data
+            self.assertIn("erin", store.report())
+
+
 class TestEndpoints(unittest.TestCase):
     def test_full_flow_through_flask(self):
         import big2.store as store_mod

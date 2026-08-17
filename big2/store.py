@@ -248,8 +248,8 @@ class Store:
             ],
         }
 
-    def report(self) -> str:
-        """Human-readable testers report: who's playing and how it's going."""
+    def leaderboard(self) -> Dict:
+        """Structured testers leaderboard: per-user record + aggregate."""
         with self._connect() as con:
             cur = con.cursor()
             cur.execute(
@@ -264,6 +264,35 @@ class Store:
                 "COALESCE(SUM(user_score), 0) FROM games"
             )
             total = cur.fetchone()
+        return {
+            "testers": [
+                {
+                    "username": name,
+                    "games": int(games or 0),
+                    "wins": int(wins or 0),
+                    "total_score": int(score or 0),
+                    "last_ts": float(last) if last else None,
+                }
+                for name, games, wins, score, last, _first in rows
+            ],
+            "totals": {
+                "games": int(total[0]),
+                "human_wins": int(total[1]),
+                "human_score": int(total[2]),
+            },
+            "persistent": self.persistent,
+        }
+
+    def report(self) -> str:
+        """Human-readable testers report: who's playing and how it's going."""
+        board = self.leaderboard()
+        rows = [
+            (t["username"], t["games"], t["wins"], t["total_score"],
+             t["last_ts"], None)
+            for t in board["testers"]
+        ]
+        total = (board["totals"]["games"], board["totals"]["human_wins"],
+                 board["totals"]["human_score"])
         import time as _t
 
         lines = [

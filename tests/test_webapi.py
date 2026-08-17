@@ -101,6 +101,66 @@ class TestHandlers(unittest.TestCase):
         finally:
             app.config["BIG2_ADMIN"] = old
 
+    def test_admin_account_unlocks_assist_surface(self):
+        import os
+        import tempfile
+
+        import big2.store as store_mod
+        from big2.server import app
+        from big2.store import Store
+
+        with tempfile.TemporaryDirectory() as d:
+            old_store = store_mod._STORE
+            store_mod._STORE = Store(url=os.path.join(d, "adm.db"))
+            c = app.test_client()
+            old = app.config.get("BIG2_ADMIN")
+            try:
+                app.config["BIG2_ADMIN"] = False
+                admin_tok = store_mod._STORE.register("brandonluo", "pw1234")
+                user_tok = store_mod._STORE.register("randomguy", "pw1234")
+                # anonymous and ordinary accounts stay locked out
+                self.assertEqual(c.get("/admin").status_code, 404)
+                self.assertEqual(
+                    c.get(f"/admin?token={user_tok}").status_code, 404
+                )
+                self.assertEqual(
+                    c.post("/api/leaderboard",
+                           json={"token": user_tok}).status_code, 404
+                )
+                self.assertEqual(
+                    c.post("/api/hint", json={"token": user_tok}).status_code,
+                    404,
+                )
+                # the admin account opens the full surface, any carrier
+                self.assertEqual(
+                    c.get(f"/admin?token={admin_tok}").status_code, 200
+                )
+                self.assertEqual(
+                    c.get("/api/progress",
+                          headers={"X-Big2-Token": admin_tok}).status_code,
+                    200,
+                )
+                board = c.post("/api/leaderboard", json={"token": admin_tok})
+                self.assertEqual(board.status_code, 200)
+                self.assertEqual(
+                    [t["username"] for t in board.get_json()["testers"]],
+                    ["brandonluo", "randomguy"],
+                )
+                # login/stats responses carry the admin flag for the UI
+                login = c.post("/api/login", json={
+                    "username": "brandonluo", "password": "pw1234"
+                }).get_json()
+                self.assertTrue(login["admin"])
+                self.assertFalse(c.post("/api/login", json={
+                    "username": "randomguy", "password": "pw1234"
+                }).get_json()["admin"])
+                stats = c.post("/api/stats",
+                               json={"token": admin_tok}).get_json()
+                self.assertTrue(stats["admin"])
+            finally:
+                app.config["BIG2_ADMIN"] = old
+                store_mod._STORE = old_store
+
 
 if __name__ == "__main__":
     unittest.main()

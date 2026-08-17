@@ -37,6 +37,27 @@ from big2.strategies import (
 HUMAN = 0
 MAX_SIMULATE_PER_CALL = 20
 
+
+def admin_users() -> set:
+    """Accounts with the full analysis surface (explorer, beliefs, hints,
+    leaderboard, unlocked settings) on public deploys.  Comma-separated
+    override via BIG2_ADMIN_USERS; defaults to the project owner."""
+    raw = os.environ.get("BIG2_ADMIN_USERS", "brandonluo")
+    return {u.strip().lower() for u in raw.split(",") if u.strip()}
+
+
+def is_admin_token(token: Optional[str]) -> bool:
+    """True when the bearer token belongs to an admin account."""
+    if not token:
+        return False
+    try:
+        from big2.store import get_store
+
+        auth = get_store().auth(token)
+    except Exception:
+        return False
+    return auth is not None and auth[1].lower() in admin_users()
+
 _POLICY_DIR = None
 
 
@@ -406,10 +427,10 @@ def register_user(body: Dict) -> Dict:
     from big2.store import get_store
 
     store = get_store()
-    token = store.register(
-        str(body.get("username") or ""), str(body.get("password") or "")
-    )
-    return {"token": token, "username": str(body.get("username")).strip(),
+    username = str(body.get("username") or "").strip()
+    token = store.register(username, str(body.get("password") or ""))
+    return {"token": token, "username": username,
+            "admin": username.lower() in admin_users(),
             "persistent": store.persistent}
 
 
@@ -417,10 +438,10 @@ def login_user(body: Dict) -> Dict:
     from big2.store import get_store
 
     store = get_store()
-    token = store.login(
-        str(body.get("username") or ""), str(body.get("password") or "")
-    )
-    return {"token": token, "username": str(body.get("username")).strip(),
+    username = str(body.get("username") or "").strip()
+    token = store.login(username, str(body.get("password") or ""))
+    return {"token": token, "username": username,
+            "admin": username.lower() in admin_users(),
             "persistent": store.persistent}
 
 
@@ -442,7 +463,16 @@ def user_stats(body: Dict) -> Dict:
     auth = store.auth(body.get("token"))
     if auth is None:
         raise ValueError("not signed in")
-    return {"username": auth[1], **store.stats(auth[0])}
+    return {"username": auth[1],
+            "admin": auth[1].lower() in admin_users(),
+            **store.stats(auth[0])}
+
+
+def leaderboard(_body: Optional[Dict] = None) -> Dict:
+    """Testers leaderboard (admin surface; the server gates access)."""
+    from big2.store import get_store
+
+    return get_store().leaderboard()
 
 
 def progress(_body: Optional[Dict] = None) -> Dict:

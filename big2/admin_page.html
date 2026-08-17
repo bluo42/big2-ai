@@ -171,6 +171,11 @@
       </div>
       <div id="progLegend" style="font-size:.68rem;color:var(--muted);margin-top:6px"></div>
     </div>
+
+    <div class="panel">
+      <h2>Testers leaderboard <button id="boardBtn" style="float:right;padding:2px 10px;font-size:.72rem">refresh</button></h2>
+      <div id="boardBox" style="color:var(--muted);font-size:.8rem">loading…</div>
+    </div>
   </div>
 
   <div id="replayPane" style="display:none">
@@ -208,6 +213,18 @@ const TYPE_LABEL = {
 const $ = (id) => document.getElementById(id);
 const rankOf = (c) => Math.floor(c / 4), suitOf = (c) => c % 4;
 const cardText = (c) => RANKS[rankOf(c)] + SUITS[suitOf(c)];
+
+// Admin token: from the ?token= link off the play page, or the signed-in
+// account in this browser.  Carried on every API call so the explorer
+// works on public deploys for admin accounts (BIG2_ADMIN dev servers
+// need no token at all).
+const TOKEN = new URLSearchParams(location.search).get("token") || (() => {
+  try {
+    return (JSON.parse(localStorage.getItem("big2_auth") || "null") || {}).token || null;
+  } catch { return null; }
+})();
+const withToken = (u) =>
+  TOKEN ? u + (u.includes("?") ? "&" : "?") + "token=" + encodeURIComponent(TOKEN) : u;
 
 let replays = [];
 let cur = null;        // current replay
@@ -267,7 +284,7 @@ $("simBtn").addEventListener("click", async () => {
       $("status").textContent = `simulating ${done}/${total}…`;
       const res = await fetch("/api/simulate", {
         method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(req),
+        body: JSON.stringify({ ...req, token: TOKEN }),
       });
       if (!res.ok) { $("status").textContent = (await res.json()).error || "error"; break; }
       const data = await res.json();
@@ -465,7 +482,7 @@ const ISLAND_COLORS = ["#4f8cff", "#37c978", "#e0a355", "#d64550"];
 async function loadProgress() {
   let rows = [];
   try {
-    const res = await fetch("/api/progress");
+    const res = await fetch(withToken("/api/progress"));
     rows = res.ok ? (await res.json()).rows : [];
   } catch {}
   const holder = $("progChart");
@@ -509,6 +526,47 @@ async function loadProgress() {
 $("progBtn").addEventListener("click", loadProgress);
 loadProgress();
 setInterval(loadProgress, 60_000);
+
+/* ---------------- testers leaderboard ---------------- */
+
+async function loadLeaderboard() {
+  const box = $("boardBox");
+  let data = null;
+  try {
+    const res = await fetch("/api/leaderboard", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ token: TOKEN }),
+    });
+    if (res.ok) data = await res.json();
+  } catch {}
+  if (!data) {
+    box.textContent = "leaderboard unavailable — sign in as an admin on the play page first";
+    return;
+  }
+  const sign = (x) => (x >= 0 ? "+" : "") + x;
+  const when = (ts) => ts ? new Date(ts * 1000).toLocaleString() : "—";
+  const rows = data.testers.map((t) => {
+    const pct = t.games ? Math.round((100 * t.wins) / t.games) + "%" : "—";
+    const avg = t.games ? sign((t.total_score / t.games).toFixed(1)) : "—";
+    return `<tr><td>${t.username}</td><td>${t.games}</td><td>${t.wins}</td>
+      <td>${pct}</td>
+      <td class="${t.total_score >= 0 ? "pos" : "neg"}">${sign(t.total_score)}</td>
+      <td>${avg}</td><td>${when(t.last_ts)}</td></tr>`;
+  }).join("");
+  const tot = data.totals;
+  const verdict = !tot.games ? "no recorded games yet"
+    : `${tot.games} games — humans ${tot.human_score >= 0 ? "up" : "down"} ` +
+      `${sign(tot.human_score)} (${sign((tot.human_score / tot.games).toFixed(2))}/game), ` +
+      `winning ${Math.round((100 * tot.human_wins) / tot.games)}%`;
+  box.innerHTML = `<table>
+    <thead><tr><th>tester</th><th>games</th><th>wins</th><th>win%</th>
+    <th>total</th><th>avg</th><th>last played</th></tr></thead>
+    <tbody>${rows}</tbody></table>
+    <div style="margin-top:6px;color:var(--muted)">${verdict}` +
+    (data.persistent ? "" : " · demo storage (no database attached)") + "</div>";
+}
+$("boardBtn").addEventListener("click", loadLeaderboard);
+loadLeaderboard();
 </script>
 </body>
 </html>

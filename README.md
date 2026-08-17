@@ -73,7 +73,17 @@ belief panel, the explorer, and their API endpoints) is **disabled** on
 public deployments. Local dev keeps everything: `python -m big2.server`
 enables it, or set `BIG2_ADMIN=1` on a private deployment.
 
-### Game explorer (`/admin`, dev-only)
+**Admin accounts** get the full surface on the public deploy too: sign
+in as an admin username (default `brandonluo`; override with a
+comma-separated `BIG2_ADMIN_USERS` env var) and the play page unlocks
+opponent selection (any lineup, 1-3 AIs), rule/scoring variants, in-game
+hints and the belief panel, plus a link into the `/admin` explorer —
+which adds a **testers leaderboard** (per-user record and the
+humans-vs-AI aggregate). Every admin API call is authenticated
+server-side with the signed account token; ordinary accounts and
+anonymous visitors still get 404s.
+
+### Game explorer (`/admin`, dev + admin accounts)
 
 Watch how the strategies actually play: pick 2-4 agents, simulate games,
 and step through replays with **every hand exposed** — action-by-action

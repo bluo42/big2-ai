@@ -284,6 +284,24 @@
     </ul>
   </div>
 
+  <div class="panel hidden" id="adminPanel">
+    <h2>Admin</h2>
+    <div class="acct-row" style="flex-wrap:wrap;gap:14px">
+      <label><input type="checkbox" id="varTriples"> lone triples</label>
+      <label><input type="checkbox" id="varPassLocks"> pass locks trick</label>
+      <label><input type="checkbox" id="varFlushRank"> flush by rank first</label>
+      <label><input type="checkbox" id="varTiered" checked> tiered payouts</label>
+      <label><input type="checkbox" id="varTwo"> 2-holder penalty</label>
+    </div>
+    <small class="acct-hint">Rule variants apply to new games you deal here;
+    the public app always plays the house defaults.</small>
+    <div style="margin-top:10px">
+      <a id="adminLink" href="/admin" style="color:var(--accent)">Open the
+      explorer &rarr; simulate matchups &middot; replays with exposed hands
+      &middot; training progress &middot; testers leaderboard</a>
+    </div>
+  </div>
+
   <button id="startBtn" class="primary">Deal cards</button>
   <div id="setupErr" style="color:var(--danger);margin-top:10px;min-height:1.2em;font-size:.85rem"></div>
 </div>
@@ -313,6 +331,8 @@
           <button data-s="suit">Suit</button>
         </div>
         <span class="spacer"></span>
+        <button id="hintBtn" class="hidden">Hint</button>
+        <button id="beliefsBtn" class="hidden">Beliefs</button>
         <button id="passBtn" class="warn">Pass</button>
         <button id="playBtn" class="good">Play</button>
       </div>
@@ -375,8 +395,16 @@ let numAi = 3;
 
 /* ---------------- setup screen ---------------- */
 
+// AUTH is initialized further down (account section) before any user
+// interaction; isAdmin() is only ever called after that.
+const isAdmin = () => {
+  try { return !!(AUTH && AUTH.admin); } catch { return false; }
+};
+
 function renderAiRows() {
+  const admin = isAdmin();
   const rows = $("aiRows");
+  const prev = [...rows.querySelectorAll("select")].map((s) => s.value);
   rows.innerHTML = "";
   for (let i = 1; i <= numAi; i++) {
     const row = document.createElement("div");
@@ -385,24 +413,29 @@ function renderAiRows() {
     label.textContent = "AI " + i;
     const sel = document.createElement("select");
     sel.dataset.idx = i;
-    const o = document.createElement("option");
-    o.value = "ppo";
-    o.textContent = AI_LABEL.ppo;
-    sel.appendChild(o);
-    sel.value = "ppo";
-    sel.disabled = true;  // informative for now: every seat is the champion
+    for (const k of admin ? AI_KINDS : ["ppo"]) {
+      const o = document.createElement("option");
+      o.value = k;
+      o.textContent = AI_LABEL[k] || k;
+      sel.appendChild(o);
+    }
+    sel.value = admin && AI_KINDS.includes(prev[i - 1]) ? prev[i - 1] : "ppo";
+    sel.disabled = !admin;  // players face the champion; admins pick freely
     row.append(label, sel);
     rows.appendChild(row);
   }
-  if (!$("aiNote")) {
-    const note = document.createElement("div");
+  let note = $("aiNote");
+  if (!note) {
+    note = document.createElement("div");
     note.id = "aiNote";
     note.className = "ai-note";
-    note.textContent =
-      "You play the current champion: the PPO set-attention net. " +
-      "Opponent selection is locked for now.";
     rows.parentElement.appendChild(note);
   }
+  note.textContent = admin
+    ? "Admin: any lineup and table size; games still record under each " +
+      "model's version stamp."
+    : "You play the current champion: the PPO set-attention net. " +
+      "Opponent selection is locked for now.";
 }
 
 $("numAiSeg").addEventListener("click", (e) => {
@@ -414,11 +447,20 @@ $("numAiSeg").addEventListener("click", (e) => {
 });
 
 function currentSettings() {
-  // House rules are fixed; the server defaults ARE the house rules.
-  return {
+  // House rules are fixed for players; admins can deal rule variants.
+  const s = {
     num_ai: numAi,
-    ai: [...$("aiRows").querySelectorAll("select")].map((s) => s.value),
+    ai: [...$("aiRows").querySelectorAll("select")].map((sel) => sel.value),
   };
+  if (isAdmin()) {
+    s.rules = {
+      allow_triples: $("varTriples").checked,
+      pass_locks: $("varPassLocks").checked,
+      flush_rank_first: $("varFlushRank").checked,
+    };
+    s.scoring = { tiered: $("varTiered").checked, two: $("varTwo").checked };
+  }
+  return s;
 }
 
 let lastSettings = null;
@@ -539,6 +581,7 @@ function renderHand() {
   el.innerHTML = "";
   for (const c of sortedHand()) {
     const d = cardEl(c);
+    d.dataset.card = c;
     if (selected.has(c)) d.classList.add("sel");
     d.addEventListener("click", () => {
       if (busy || S.phase !== "playing" || S.turn !== S.human_seat) return;
@@ -633,15 +676,41 @@ async function refreshBeliefs() {
     const res = await fetch("/api/beliefs", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ state: FS }),
+      body: JSON.stringify({ state: FS, token: AUTH && AUTH.token }),
     });
     B = res.ok ? await res.json() : null;
   } catch { B = null; }
   renderBeliefs();
 }
 
-// Beliefs assist is disabled on the public app (dev builds re-enable it
-// server-side; the panel machinery stays for that).
+// Beliefs + hints are admin-only surfaces: the server 404s them unless
+// BIG2_ADMIN is set (dev) or the request carries an admin account token.
+$("beliefsBtn").addEventListener("click", () => {
+  beliefsOn = !beliefsOn;
+  $("beliefsBtn").classList.toggle("good", beliefsOn);
+  refreshBeliefs();
+});
+
+$("hintBtn").addEventListener("click", async () => {
+  if (busy || !S || S.phase !== "playing" || S.turn !== S.human_seat) return;
+  try {
+    const h = await apiAuth("/api/hint", {
+      state: FS, token: AUTH && AUTH.token,
+    });
+    selected = new Set(h.cards || []);
+    for (const d of document.querySelectorAll("#hand .card")) {
+      const on = selected.has(+d.dataset.card);
+      d.classList.toggle("sel", on);
+      d.classList.toggle("hinted", on);
+    }
+    updateControls();  // refresh buttons first: it rewrites the status line
+    setStatus(h.cards
+      ? `Hint: play the <b>${TYPE_LABEL[h.type] || h.type}</b> highlighted below`
+      : "Hint: <b>pass</b>");
+  } catch (e) {
+    setStatus("Hint unavailable: " + e.message);
+  }
+});
 
 function renderTable(combo, byName) {
   const el = $("tableCards");
@@ -903,10 +972,33 @@ async function apiAuth(url, body) {
   return data;
 }
 
+function applyAdminUI() {
+  const admin = isAdmin();
+  $("adminPanel").classList.toggle("hidden", !admin);
+  if (admin) {
+    $("adminLink").href = "/admin?token=" + encodeURIComponent(AUTH.token);
+  }
+  for (const b of $("numAiSeg").children) {
+    b.disabled = admin ? false : b.dataset.n !== "3";
+    b.title = b.disabled ? "coming back later" : "";
+  }
+  if (!admin && numAi !== 3) {
+    numAi = 3;
+    for (const b of $("numAiSeg").children) {
+      b.classList.toggle("on", b.dataset.n === "3");
+    }
+  }
+  $("hintBtn").classList.toggle("hidden", !admin);
+  $("beliefsBtn").classList.toggle("hidden", !admin);
+  if (!admin && beliefsOn) { beliefsOn = false; refreshBeliefs(); }
+  renderAiRows();
+}
+
 function renderAuth() {
   $("authForms").classList.toggle("hidden", !!AUTH);
   $("authedBox").classList.toggle("hidden", !AUTH);
   if (AUTH) $("authName").textContent = AUTH.username;
+  applyAdminUI();
 }
 
 async function doAuth(url) {
@@ -915,7 +1007,7 @@ async function doAuth(url) {
     const data = await apiAuth(url, {
       username: $("authUser").value, password: $("authPass").value,
     });
-    AUTH = { token: data.token, username: data.username };
+    AUTH = { token: data.token, username: data.username, admin: !!data.admin };
     localStorage.setItem("big2_auth", JSON.stringify(AUTH));
     renderAuth();
     refreshAccountStats();
@@ -935,6 +1027,12 @@ async function refreshAccountStats() {
   if (!AUTH) return;
   try {
     const stats = await apiAuth("/api/stats", { token: AUTH.token });
+    // Admin standing can change server-side; trust the fresh answer.
+    if (AUTH && !!stats.admin !== !!AUTH.admin) {
+      AUTH.admin = !!stats.admin;
+      localStorage.setItem("big2_auth", JSON.stringify(AUTH));
+      applyAdminUI();
+    }
     const sign = (x) => (x >= 0 ? "+" : "") + x;
     $("authSummary").textContent =
       `${stats.games} games · ${stats.wins} wins · total ${sign(stats.total_score)}`;
