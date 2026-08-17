@@ -80,6 +80,26 @@ def progress():
     return jsonify(webapi.progress())
 
 
+@app.route("/api/register", methods=["POST"])
+def register():
+    return _handle(webapi.register_user)
+
+
+@app.route("/api/login", methods=["POST"])
+def login():
+    return _handle(webapi.login_user)
+
+
+@app.route("/api/record-game", methods=["POST"])
+def record_game():
+    return _handle(webapi.record_game)
+
+
+@app.route("/api/stats", methods=["POST"])
+def stats():
+    return _handle(webapi.user_stats)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--host", default="127.0.0.1")

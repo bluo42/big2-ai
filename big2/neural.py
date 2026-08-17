@@ -278,8 +278,8 @@ def _opponent_pool() -> List[Strategy]:
 _SNAP_CACHE: Dict[Tuple[str, float], "PPOPolicy"] = {}
 
 # Worker-side cross-game opponent profiles: persists across games within
-# the worker process, refreshing per opponent every ~500 observed games.
-_PROFILE_BOOK = OpponentProfileBook(refresh_games=500)
+# the worker process; recency-weighted EMA with a ~500-game half-life.
+_PROFILE_BOOK = OpponentProfileBook(half_life_games=500)
 
 
 def _load_snapshot_policy(path: str) -> Optional["PPOPolicy"]:

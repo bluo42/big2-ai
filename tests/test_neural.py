@@ -29,20 +29,27 @@ class TestFeatureAssembly(unittest.TestCase):
         self.assertEqual(state2.shape, (FEAT_DIM,))
         self.assertGreaterEqual(len(options), 1)
 
-    def test_profile_book_accumulates_and_refreshes(self):
+    def test_profile_book_ema_weights_recent_without_forgetting(self):
         from big2.profiles import PROFILE_DIM, OpponentProfileBook
         from big2.strategies import PlayLowest
 
-        book = OpponentProfileBook(refresh_games=3)
-        for seed in range(5):
+        book = OpponentProfileBook(half_life_games=3)
+        for seed in range(6):
             game = Big2Game(rng=random.Random(seed))
             game.play_out([PlayLowest()] * 4)
             book.observe_game(game, {1: "opp", 2: "other"})
-        # window refreshed at 3: games_seen restarted, 5 -> window of 2
-        self.assertEqual(book.games_seen("opp"), 2)
+        # nothing is ever eliminated: raw count keeps growing
+        self.assertEqual(book.games_seen("opp"), 6)
         f = book.features("opp")
         self.assertEqual(f.shape, (PROFILE_DIM,))
         self.assertTrue(((f >= 0.0) & (f <= 1.0)).all())
+        # confidence = 1 - decay^n: exactly 0.5 after one half-life
+        book2 = OpponentProfileBook(half_life_games=3)
+        for seed in range(3):
+            game = Big2Game(rng=random.Random(seed))
+            game.play_out([PlayLowest()] * 4)
+            book2.observe_game(game, {1: "opp"})
+        self.assertAlmostEqual(book2.features("opp")[0], 0.5, places=5)
         self.assertTrue((book.features("stranger") == 0).all())
 
     def test_belief_target_counts_opponent_cards(self):

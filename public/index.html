@@ -64,6 +64,19 @@
   .seg button.on { background: var(--accent); font-weight: 700; }
   .ai-row { display: flex; align-items: center; gap: 10px; margin-top: 10px; }
   .ai-row label { width: 44px; color: var(--muted); }
+  .acct-row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+  .acct-row input {
+    font: inherit; color: var(--text); background: var(--panel-2);
+    border: 1px solid var(--line); border-radius: 8px; padding: 7px 10px; width: 150px;
+  }
+  .acct-err { color: var(--danger); font-size: .8rem; min-height: 1.1em; margin-top: 6px; }
+  .acct-hint { color: var(--muted); font-size: .78rem; display: inline-block; margin-top: 6px; }
+  #recordRows { margin-top: 10px; font-size: .8rem; }
+  #recordRows table { width: 100%; border-collapse: collapse; }
+  #recordRows th, #recordRows td { text-align: left; padding: 4px 6px; border-bottom: 1px solid var(--line); }
+  #recordRows th { color: var(--muted); font-weight: 500; font-size: .7rem; text-transform: uppercase; letter-spacing: .08em; }
+  #recordRows td:nth-child(n+2), #recordRows th:nth-child(n+2) { text-align: right; }
+  .lineup-tag { color: var(--muted); font-size: .72rem; }
   .rule { display: flex; align-items: flex-start; gap: 10px; padding: 7px 0; cursor: pointer; }
   .rule input { margin-top: 4px; accent-color: var(--accent); width: 15px; height: 15px; }
   .rule small { display: block; color: var(--muted); }
@@ -148,6 +161,25 @@
   .card.mini .tl small { font-size: .7rem; }
   .card.mini .pip { font-size: 1.1rem; bottom: 4px; right: 6px; }
   .card.mini:hover { transform: none; }
+  .card.icon {
+    width: 21px; height: 30px; margin: 0 1px 0 0; border-radius: 4px;
+    cursor: default; box-shadow: 0 1px 2px #0006;
+  }
+  .card.icon .tl { font-size: .5rem; top: 1px; left: 2px; line-height: 1; }
+  .card.icon .tl small { font-size: .5rem; }
+  .card.icon .pip { display: none; }
+  .card.icon:hover { transform: none; }
+
+  /* current-trick plays shown in front of each player */
+  .opp .tplay { margin-top: 6px; min-height: 34px; display: flex; align-items: center; justify-content: center; gap: 2px; }
+  .opp .tplay .pass-note { color: var(--muted); font-size: .7rem; font-style: italic; }
+  .seq {
+    display: inline-flex; align-items: center; justify-content: center;
+    width: 15px; height: 15px; border-radius: 999px; background: var(--accent);
+    color: #fff; font-size: .6rem; font-weight: 700; margin-right: 4px; flex: 0 0 auto;
+  }
+  #yourPlay { display: flex; align-items: center; gap: 4px; min-height: 34px; margin-left: 16px; }
+  #yourPlay .pass-note { color: #567a63; font-size: .75rem; font-style: italic; }
   .suit-0 { color: var(--s-diamond); }
   .suit-1 { color: var(--s-club); }
   .suit-2 { color: var(--s-heart); }
@@ -203,6 +235,32 @@
   <h1>BIG <span>2</span></h1>
   <div class="tag">diamonds &lt; clubs &lt; hearts &lt; spades &middot; 3 low, 2 high</div>
 
+  <div class="panel" id="accountPanel">
+    <h2>Account</h2>
+    <div id="authForms">
+      <div class="acct-row">
+        <input id="authUser" placeholder="username" maxlength="24">
+        <input id="authPass" type="password" placeholder="password">
+        <button id="loginBtn">Sign in</button>
+        <button id="registerBtn" class="primary">Register</button>
+      </div>
+      <div id="authErr" class="acct-err"></div>
+      <small class="acct-hint">An account keeps a running score across games
+      (per opponent lineup and model version) and saves your games for
+      training the AIs.</small>
+    </div>
+    <div id="authedBox" class="hidden">
+      <div class="acct-row">
+        <b id="authName"></b>
+        <span id="authSummary" class="acct-hint"></span>
+        <span style="flex:1"></span>
+        <button id="signoutBtn">sign out</button>
+      </div>
+      <div id="persistWarn" class="acct-err"></div>
+      <div id="recordRows"></div>
+    </div>
+  </div>
+
   <div class="panel">
     <h2>Opponents</h2>
     <div class="seg" id="numAiSeg">
@@ -256,6 +314,7 @@
     <div id="table">
       <div id="tableLabel">TABLE</div>
       <div id="tableCards"><span class="empty">fresh trick</span></div>
+      <div id="yourPlay"></div>
     </div>
     <div id="status"></div>
     <div id="handArea">
@@ -419,7 +478,7 @@ $("newGameBtn").addEventListener("click", () => {
 
 function cardEl(id, mini = false) {
   const d = document.createElement("div");
-  d.className = `card suit-${suitOf(id)}` + (mini ? " mini" : "");
+  d.className = `card suit-${suitOf(id)}` + (mini ? " " + (mini === "icon" ? "icon" : "mini") : "");
   d.dataset.id = id;
   const tl = document.createElement("div");
   tl.className = "tl";
@@ -429,6 +488,54 @@ function cardEl(id, mini = false) {
   pip.textContent = SUITS[suitOf(id)];
   d.append(tl, pip);
   return d;
+}
+
+/* Current-trick reconstruction: which plays are on the table right now,
+   in order, in front of whoever made them. */
+let viewUpTo = 0;       // history entries currently rendered
+let hideTrick = false;  // true during the pause right after a trick ends
+
+function currentTrick() {
+  if (!S) return { bySeat: {}, count: 0 };
+  const entries = S.history.slice(0, viewUpTo);
+  let start = 0;
+  for (let i = 0; i < entries.length - 1; i++) {
+    if (entries[i].trick_end) start = i + 1;
+  }
+  const last = entries[entries.length - 1];
+  if (last && last.trick_end) {
+    // just-finished trick: keep showing it until the reset render,
+    // and keep showing it forever once the game is over
+    if (hideTrick && S.phase !== "over") return { bySeat: {}, count: 0 };
+  }
+  const bySeat = {};
+  let seq = 0;
+  for (let i = start; i < entries.length; i++) {
+    const h = entries[i];
+    seq += 1;
+    bySeat[h.player] = { cards: h.cards, type: h.type, seq, pass: !h.cards };
+  }
+  return { bySeat, count: seq };
+}
+
+function playEl(info) {
+  const holder = document.createElement("div");
+  if (!info) return holder;
+  const seq = document.createElement("span");
+  seq.className = "seq";
+  seq.textContent = info.seq;
+  holder.appendChild(seq);
+  if (info.pass) {
+    const p = document.createElement("span");
+    p.className = "pass-note";
+    p.textContent = "passed";
+    holder.appendChild(p);
+  } else {
+    for (const c of info.cards) holder.appendChild(cardEl(c, "icon"));
+  }
+  holder.style.display = "flex";
+  holder.style.alignItems = "center";
+  return holder;
 }
 
 function sortedHand() {
@@ -470,7 +577,25 @@ function renderOpponents(view) {
       <div class="name">${p.name}</div>
       <div class="count">${p.cards}<small> cards</small></div>
       <div class="last">${p.last || ""}</div>`;
+    const trick = currentTrick();
+    const tp = document.createElement("div");
+    tp.className = "tplay";
+    tp.appendChild(playEl(trick.bySeat[p.seat]));
+    d.appendChild(tp);
     el.appendChild(d);
+  }
+  // The human's play in the current trick shows on the table felt.
+  const yp = $("yourPlay");
+  if (yp) {
+    yp.innerHTML = "";
+    const mine = currentTrick().bySeat[S ? S.human_seat : 0];
+    if (mine) {
+      const label = document.createElement("span");
+      label.className = "pass-note";
+      label.textContent = "you:";
+      yp.appendChild(label);
+      yp.appendChild(playEl(mine));
+    }
   }
   renderBeliefs();
 }
@@ -548,18 +673,30 @@ function renderTable(combo, byName) {
 }
 
 function renderLog(upTo) {
+  viewUpTo = upTo;
   const el = $("log");
   el.innerHTML = "";
   const entries = S.history.slice(0, upTo);
   for (const h of entries) {
     const row = document.createElement("div");
     row.className = "log-entry" + (h.player === S.human_seat ? " me" : "");
-    const who = `<span class="who">${h.name}</span>`;
-    const what = h.cards
-      ? `<span class="what">${TYPE_LABEL[h.type] || h.type}</span>
-         <span class="cards suit-x">${h.cards.map(cardText).join(" ")}</span>`
-      : `<span class="what pass">passed</span>`;
-    row.innerHTML = who + what;
+    const who = document.createElement("span");
+    who.className = "who";
+    who.textContent = h.name;
+    row.appendChild(who);
+    if (h.cards) {
+      // card icons: the game's play-by-play chart
+      const strip = document.createElement("span");
+      strip.style.display = "inline-flex";
+      strip.style.alignItems = "center";
+      for (const c of h.cards) strip.appendChild(cardEl(c, "icon"));
+      row.appendChild(strip);
+    } else {
+      const p = document.createElement("span");
+      p.className = "what pass";
+      p.textContent = "passed";
+      row.appendChild(p);
+    }
     el.appendChild(row);
     if (h.trick_end) {
       const hr = document.createElement("div");
@@ -638,9 +775,10 @@ async function applyState(state) {
     ? nameOf(prev.table_player) : null;
 
   renderHand();
+  renderLog(seenHistory);
+  hideTrick = false;
   renderOpponents(viewFromState(state, counts, lastActions, passed));
   renderTable(tableCombo, tableBy);
-  renderLog(seenHistory);
 
   for (let i = 0; i < fresh.length; i++) {
     const h = fresh[i];
@@ -659,14 +797,17 @@ async function applyState(state) {
       lastActions[h.player] = "passed";
     }
     seenHistory++;
+    renderLog(seenHistory);
+    hideTrick = false;
     renderOpponents(viewFromState(state, counts, lastActions, passed));
     renderTable(tableCombo, tableBy);
-    renderLog(seenHistory);
     if (!isHuman) await sleep(h.cards ? 550 : 300);
     if (h.trick_end && !(state.phase === "over" && i === fresh.length - 1)) {
-      await sleep(420);
+      // let the winning play linger in front of its player, then reset
+      await sleep(600);
       tableCombo = null; tableBy = null;
       for (const s of Object.keys(passed)) passed[s] = false;
+      hideTrick = true;
       renderTable(null, null);
       renderOpponents(viewFromState(state, counts, lastActions, passed));
     }
@@ -674,9 +815,12 @@ async function applyState(state) {
 
   busy = false;
   // Final authoritative render.
+  renderLog(state.history.length);
+  hideTrick = state.history.length > 0 &&
+    state.history[state.history.length - 1].trick_end &&
+    state.phase !== "over";
   renderOpponents({ players: state.players, turn: state.turn, over: state.phase === "over" });
   renderTable(state.table, state.table_player !== null ? nameOf(state.table_player) : null);
-  renderLog(state.history.length);
   seenHistory = state.history.length;
   updateControls();
   refreshBeliefs();
@@ -702,14 +846,16 @@ function ruleChip(r) {
 const PLAYED_LOG_KEY = "big2_played_games";
 
 function logFinishedGame() {
+  let replay = null;
   try {
     const hands = FS.hands.map((h) => [...h]);
     for (const [p, cards] of FS.history) if (cards) hands[p].push(...cards);
     hands.forEach((h) => h.sort((a, b) => a - b));
-    const replay = {
+    replay = {
       ts: Date.now(),
       source: "played",
       players: S.players.map((p) => p.name),
+      stamps: S.players.map((p) => p.stamp),
       num_players: S.num_players,
       rules: S.rules,
       scoring: S.scoring,
@@ -725,7 +871,93 @@ function logFinishedGame() {
     log.push(replay);
     localStorage.setItem(PLAYED_LOG_KEY, JSON.stringify(log.slice(-200)));
   } catch (e) { /* storage full or disabled: play on */ }
+  recordGameToAccount(replay);
 }
+
+/* ---------------- account: running score + saved games ---------------- */
+
+let AUTH = null;
+try { AUTH = JSON.parse(localStorage.getItem("big2_auth") || "null"); } catch {}
+
+async function apiAuth(url, body) {
+  const res = await fetch(url, {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.error || "server error");
+  return data;
+}
+
+function renderAuth() {
+  $("authForms").classList.toggle("hidden", !!AUTH);
+  $("authedBox").classList.toggle("hidden", !AUTH);
+  if (AUTH) $("authName").textContent = AUTH.username;
+}
+
+async function doAuth(url) {
+  $("authErr").textContent = "";
+  try {
+    const data = await apiAuth(url, {
+      username: $("authUser").value, password: $("authPass").value,
+    });
+    AUTH = { token: data.token, username: data.username };
+    localStorage.setItem("big2_auth", JSON.stringify(AUTH));
+    renderAuth();
+    refreshAccountStats();
+  } catch (e) {
+    $("authErr").textContent = e.message;
+  }
+}
+$("loginBtn").addEventListener("click", () => doAuth("/api/login"));
+$("registerBtn").addEventListener("click", () => doAuth("/api/register"));
+$("signoutBtn").addEventListener("click", () => {
+  AUTH = null;
+  localStorage.removeItem("big2_auth");
+  renderAuth();
+});
+
+async function refreshAccountStats() {
+  if (!AUTH) return;
+  try {
+    const stats = await apiAuth("/api/stats", { token: AUTH.token });
+    const sign = (x) => (x >= 0 ? "+" : "") + x;
+    $("authSummary").textContent =
+      `${stats.games} games · ${stats.wins} wins · total ${sign(stats.total_score)}`;
+    $("persistWarn").textContent = stats.persistent ? "" :
+      "demo storage: this server has no database attached, stats reset on redeploy";
+    const rows = stats.lineups.map((l) => `
+      <tr><td><span class="lineup-tag">${l.lineup.join(" · ")}</span></td>
+      <td>${l.games}</td><td>${l.wins}</td>
+      <td class="${l.total_score >= 0 ? "pos" : "neg"}">${sign(l.total_score)}</td>
+      <td>${sign(l.avg_score)}</td></tr>`).join("");
+    $("recordRows").innerHTML = stats.lineups.length
+      ? `<table><tr><th>opponents (model versions)</th><th>games</th><th>wins</th><th>total</th><th>avg</th></tr>${rows}</table>`
+      : `<span class="acct-hint">no games recorded yet — play one!</span>`;
+  } catch (e) {
+    if (String(e.message).includes("signed")) { AUTH = null; renderAuth(); }
+  }
+}
+
+function recordGameToAccount(replay) {
+  if (!AUTH || !S || S.phase !== "over") return;
+  const game = {
+    num_players: S.num_players,
+    lineup: S.players.filter((p) => p.seat !== S.human_seat).map((p) => p.stamp),
+    rules: S.rules,
+    scoring: S.scoring,
+    user_seat: S.human_seat,
+    user_score: S.scores[String(S.human_seat)],
+    won: S.winner === S.human_seat,
+    replay,
+  };
+  apiAuth("/api/record-game", { token: AUTH.token, game })
+    .then(() => refreshAccountStats())
+    .catch(() => {});
+}
+
+renderAuth();
+refreshAccountStats();
 
 function showGameOver() {
   const won = S.winner === S.human_seat;

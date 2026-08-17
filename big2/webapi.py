@@ -108,6 +108,33 @@ AI_KINDS = [
     "dumper", "lowest", "highest", "random",
 ]
 
+_POLICY_FILES = {
+    "ppo": "ppo_attn.pt",
+    "evo": "evo_mlp.npz",
+    "linear": "linear_cem.npz",
+    "dmc": "dmc_linear.npz",
+}
+
+
+def model_stamp(kind: Optional[str]) -> str:
+    """Time-stamped model identity, e.g. 'ppo@20260817-1755', so scores
+    stay attributable to the exact model version that was playing."""
+    if kind is None:
+        return "you"
+    fname = _POLICY_FILES.get(kind)
+    if fname is None:
+        return f"{kind}@builtin"
+    import time as _time
+
+    try:
+        mtime = os.path.getmtime(_policy_path(fname))
+        return f"{kind}@{_time.strftime('%Y%m%d-%H%M', _time.gmtime(mtime))}"
+    except OSError:
+        return f"{kind}@builtin"
+
+
+import os  # noqa: E402  (used by model_stamp/_policy_path)
+
 
 # ----------------------------------------------------------------------
 # Serialization
@@ -239,6 +266,7 @@ def view_payload(game: Big2Game, ai_kinds: Dict[int, Optional[str]]) -> Dict:
                 "seat": p,
                 "name": names[p],
                 "ai": ai_kinds[p],
+                "stamp": model_stamp(ai_kinds[p]),
                 "cards": len(game.hands[p]),
                 "passed": game.passed[p],
             }
@@ -372,6 +400,49 @@ def beliefs(body: Dict) -> Dict:
             "known_hand": b.known_hand(p),
         }
     return {"unseen": b.n_unseen, "opponents": out}
+
+
+def register_user(body: Dict) -> Dict:
+    from big2.store import get_store
+
+    store = get_store()
+    token = store.register(
+        str(body.get("username") or ""), str(body.get("password") or "")
+    )
+    return {"token": token, "username": str(body.get("username")).strip(),
+            "persistent": store.persistent}
+
+
+def login_user(body: Dict) -> Dict:
+    from big2.store import get_store
+
+    store = get_store()
+    token = store.login(
+        str(body.get("username") or ""), str(body.get("password") or "")
+    )
+    return {"token": token, "username": str(body.get("username")).strip(),
+            "persistent": store.persistent}
+
+
+def record_game(body: Dict) -> Dict:
+    from big2.store import get_store
+
+    store = get_store()
+    auth = store.auth(body.get("token"))
+    if auth is None:
+        raise ValueError("not signed in")
+    store.record_game(auth[0], body.get("game") or {})
+    return {"ok": True, "persistent": store.persistent}
+
+
+def user_stats(body: Dict) -> Dict:
+    from big2.store import get_store
+
+    store = get_store()
+    auth = store.auth(body.get("token"))
+    if auth is None:
+        raise ValueError("not signed in")
+    return {"username": auth[1], **store.stats(auth[0])}
 
 
 def progress(_body: Optional[Dict] = None) -> Dict:

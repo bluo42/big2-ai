@@ -6,3 +6,4 @@ __pycache__/
 big2/policies/evolve/*
 !big2/policies/evolve/progress.csv
 big2/policies/ppo_snapshots/
+big2/data/

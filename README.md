@@ -75,6 +75,18 @@ island, so you can see improvement and plateaus as games accumulate.
   holding a 2 / an ace / a pair / a triple, the chance they can beat
   what's on the table, and a 13-rank heat strip — sharpening to
   certainty ("hand known") as the endgame eliminates possibilities.
+- Each trick shows **who played what, in order** — numbered plays sit in
+  front of their player and the winning play lingers before the reset —
+  and the action history is a **card-icon play-by-play chart** of every
+  hand played and by whom.
+- **Accounts & running score**: register with just a username and
+  password to keep a tally across games — total score, wins, and a
+  per-lineup record against **time-stamped model versions** (e.g.
+  `ppo@20260817-1755`), so scores stay meaningful as the AIs retrain.
+  Logged-in games are saved server-side as full replays for training
+  (`python -m big2.store --export replays.jsonl`). Locally this uses
+  SQLite out of the box; on Vercel attach a Postgres `DATABASE_URL` for
+  durable storage (without one the deployed site keeps demo-mode stats).
 
 ## Rules implemented
 
