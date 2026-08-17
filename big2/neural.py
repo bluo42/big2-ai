@@ -262,14 +262,18 @@ def widen_state_dict(sd: Dict, new_dim: int = STATE_DIM) -> Dict:
 
 def _opponent_pool() -> List[Strategy]:
     """Deliberately lean: the strongest scripted agent (dumper, per the
-    current baseline table) plus the CEM linear champion.  Weak opponents
-    dilute the best-response gradient; past-self snapshots and self-play
-    supply the diversity instead."""
+    current baseline table), the CEM linear champion, and — closing the
+    PSRO loop — the trained exploiter, so the next generation faces its
+    own best adversary.  Weak opponents dilute the best-response
+    gradient; past-self snapshots and self-play supply the diversity."""
     pool: List[Strategy] = [FiveCardDumper()]
     try:
         pool.append(LinearPolicy.load("big2/policies/linear_cem.npz"))
     except Exception:
         pool.append(SmartHeuristic())
+    exploiter = _load_snapshot_policy("big2/policies/ppo_exploiter.pt")
+    if exploiter is not None:
+        pool.append(exploiter)
     return pool
 
 
