@@ -770,7 +770,9 @@ $("playBtn").addEventListener("click", async () => {
 
 $("passBtn").addEventListener("click", async () => {
   if (busy) return;
-  const state = await post("/api/pass", { state: FS });
+  // Passing rides the play endpoint ("pass" is a reserved word in Python,
+  // so it can't be a Vercel function filename).
+  const state = await post("/api/play", { state: FS, pass: true });
   if (state) { selected.clear(); await applyState(state); }
 });
 
