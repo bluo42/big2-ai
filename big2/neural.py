@@ -619,6 +619,14 @@ def train_ppo(
                 if len(champs) == 3
                 else float("nan")
             )
+            # Performance against the actual training diet (minus
+            # self-play): the exact opponents it is learning to beat.
+            diet = _opponent_pool()
+            diet = (diet + diet)[:3]
+            vs_diet = _probe(
+                policy, diet, probe_games, ScoringConfig(), DEFAULT_RULES,
+                seed=it + 2,
+            )
             tag = 6 if exploit_target else 5
             label = "vs-target" if exploit_target else "vs-champions"
             os.makedirs(os.path.dirname(progress_path), exist_ok=True)
@@ -628,9 +636,13 @@ def train_ppo(
                     f"{'exploiter' if exploit_target else 'ppo'},0,{lr:.5f},"
                     f"{vs_base:.3f},{vs_champ:.3f}\n"
                 )
+                # Diet series charts as its own island tag (7).
+                f.write(
+                    f"7,{total_games},4,diet,0,{lr:.5f},{vs_diet:.3f},nan\n"
+                )
             print(
                 f"[ppo] probe @{total_games}: vs-baselines {vs_base:+.2f}  "
-                f"{label} {vs_champ:+.2f}",
+                f"{label} {vs_champ:+.2f}  vs-diet {vs_diet:+.2f}",
                 flush=True,
             )
             net.train()
