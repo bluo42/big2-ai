@@ -58,6 +58,46 @@ class TestFeatureAssembly(unittest.TestCase):
         self.assertEqual(t.shape, (BELIEF_SLOTS,))
         self.assertEqual(t.sum(), 39.0)  # three hidden 13-card hands
 
+    def test_danger_features_flag_near_winners(self):
+        from big2.combos import classify
+        from big2.neural import DANGER_DIM, danger_features
+        from big2.rules import DEFAULT_RULES
+
+        game = Big2Game(rng=random.Random(4))
+        p = game.turn
+        nxt = (p + 1) % game.num_players
+        f = danger_features(game, p, None)
+        self.assertEqual(f.shape, (DANGER_DIM,))
+        # everyone still holds 13 cards: no alarms
+        self.assertEqual(f[0], 0.0)
+        self.assertEqual(f[2], 0.0)
+        self.assertAlmostEqual(f[3], 1.0)
+        self.assertEqual(f[4], 0.0)
+        # next player down to one card: alarms fire
+        game.hands[nxt] = game.hands[nxt][:1]
+        f = danger_features(game, p, None)
+        self.assertEqual(f[0], 1.0)
+        self.assertEqual(f[2], 1.0)
+        self.assertEqual(f[4], 1.0)
+        self.assertEqual(f[6], 1.0)
+        # a cheap single gifted to the near-winner scores hotter than a
+        # top single
+        lo = classify((min(game.hands[p]),), DEFAULT_RULES)
+        hi = classify((max(game.hands[p]),), DEFAULT_RULES)
+        f_lo = danger_features(game, p, lo)
+        f_hi = danger_features(game, p, hi)
+        self.assertGreater(f_lo[10], f_hi[10])
+        self.assertGreater(f_lo[11], 0.0)
+        self.assertEqual(f_lo[13], 1.0)  # our single: they can go out on it
+        # encode_decision widens rows by exactly the danger block
+        from big2.neural import ACT_DIM_V1
+
+        _, _, acts = encode_decision(game, p)
+        _, _, acts_v1 = encode_decision(game, p, include_danger=False)
+        self.assertEqual(acts.shape[1], ACT_DIM)
+        self.assertEqual(acts_v1.shape[1], ACT_DIM_V1)
+        np.testing.assert_allclose(acts[:, :ACT_DIM_V1], acts_v1)
+
 
 @unittest.skipUnless(HAS_TORCH, "torch not installed")
 class TestNetAndPPO(unittest.TestCase):
@@ -98,21 +138,28 @@ class TestNetAndPPO(unittest.TestCase):
         import torch
 
         from big2.features import FEAT_DIM as OLD_DIM
-        from big2.neural import STATE_DIM, build_net, widen_state_dict
+        from big2.neural import (
+            ACT_DIM_V1, STATE_DIM, build_net, widen_state_dict,
+        )
 
-        old = build_net(d_model=32, heads=2, state_dim=OLD_DIM)
-        wide = build_net(d_model=32, heads=2, state_dim=STATE_DIM)
-        wide.load_state_dict(widen_state_dict(old.state_dict(), STATE_DIM))
+        old = build_net(d_model=32, heads=2, state_dim=OLD_DIM,
+                        act_dim=ACT_DIM_V1)
+        wide = build_net(d_model=32, heads=2, state_dim=STATE_DIM,
+                         act_dim=ACT_DIM)
+        wide.load_state_dict(widen_state_dict(old.state_dict()))
         B, A = 2, 5
         state_old = torch.randn(B, OLD_DIM)
         state_wide = torch.cat(
             [state_old, torch.zeros(B, STATE_DIM - OLD_DIM)], dim=1
         )
-        acts = torch.randn(B, A, ACT_DIM)
+        acts_old = torch.randn(B, A, ACT_DIM_V1)
+        acts_wide = torch.cat(
+            [acts_old, torch.zeros(B, A, ACT_DIM - ACT_DIM_V1)], dim=2
+        )
         mask = torch.ones(B, A, dtype=torch.bool)
         with torch.no_grad():
-            lo, vo, _ = old(state_old, acts, mask)
-            lw, vw, _ = wide(state_wide, acts, mask)
+            lo, vo, _ = old(state_old, acts_old, mask)
+            lw, vw, _ = wide(state_wide, acts_wide, mask)
         torch.testing.assert_close(lo, lw, atol=1e-5, rtol=1e-5)
         torch.testing.assert_close(vo, vw, atol=1e-5, rtol=1e-5)
 

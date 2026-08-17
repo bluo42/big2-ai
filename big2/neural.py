@@ -52,10 +52,52 @@ from big2.rules import DEFAULT_RULES
 from big2.strategies import FiveCardDumper, SmartHeuristic, Strategy
 
 SCORE_SCALE = 39.0
-ACT_DIM = FEAT_DIM + CEM_DIM + 1  # v4 features + CEM features + champion advice
+# v1.1: sharp endgame-danger block appended to every action encoding.
+# Counts existed as soft /13 scalars before; these are the thresholded
+# versions plus the interactions that matter ("the next actor is nearly
+# out AND this move is a cheap gift").
+DANGER_DIM = 14
+ACT_DIM_V1 = FEAT_DIM + CEM_DIM + 1  # v1.0 nets: v4 + CEM + champion advice
+ACT_DIM = ACT_DIM_V1 + DANGER_DIM
 BELIEF_SLOTS = 3 * NUM_CARDS  # per-opponent hand membership, seat order after me
 PROFILE_SLOTS = 3 * PROFILE_DIM  # cross-game opponent profiles, same order
 STATE_DIM = FEAT_DIM + PROFILE_SLOTS
+
+
+def danger_features(game: Big2Game, player: int,
+                    move: Optional[Combo]) -> np.ndarray:
+    """Per-move endgame awareness (v1.1).
+
+    Layout: next-actor cards [==1, ==2, <=3, /13], field minimum
+    [==1, ==2, <=3], relative seat holding the minimum (3), cheapness of
+    this move as a single, cheap-single x next-actor-nearly-out,
+    someone/next-actor could go out on exactly this class size.
+    """
+    f = np.zeros(DANGER_DIM, dtype=np.float32)
+    n = game.num_players
+    nxt = (player + 1) % n
+    cn = len(game.hands[nxt])
+    others = [p for p in range(n) if p != player]
+    counts = [len(game.hands[p]) for p in others]
+    mn = min(counts)
+    f[0] = 1.0 if cn == 1 else 0.0
+    f[1] = 1.0 if cn == 2 else 0.0
+    f[2] = 1.0 if cn <= 3 else 0.0
+    f[3] = cn / 13.0
+    f[4] = 1.0 if mn == 1 else 0.0
+    f[5] = 1.0 if mn == 2 else 0.0
+    f[6] = 1.0 if mn <= 3 else 0.0
+    f[7 + min(counts.index(mn), 2)] = 1.0  # 7,8,9: who is nearly out
+    if move is not None and len(move) == 1:
+        f[10] = 1.0 - max(move.cards) / 51.0  # cheap single = easy to beat
+        f[11] = f[10] if cn <= 2 else 0.0     # ...gifted to a near-winner
+    size = len(move) if move is not None else (
+        len(game.table_combo) if game.table_combo else 0
+    )
+    if size:
+        f[12] = 1.0 if any(c == size for c in counts) else 0.0
+        f[13] = 1.0 if cn == size else 0.0
+    return f
 
 DEFAULT_MODEL_PATH = "big2/policies/ppo_attn.pt"
 
@@ -88,12 +130,15 @@ def encode_decision(
     book: Optional[OpponentProfileBook] = None,
     seat_keys: Optional[Dict[int, object]] = None,
     include_profiles: bool = True,
+    include_danger: bool = True,
 ) -> Tuple[List[Optional[Combo]], np.ndarray, np.ndarray]:
     """(options, state_vec, action_matrix) for one decision.
 
     With ``include_profiles`` the state carries cross-game opponent
     profiles (zeros when no ``book``/``seat_keys`` are supplied — e.g.
-    at deploy time or in probes)."""
+    at deploy time or in probes).  ``include_danger`` appends the v1.1
+    endgame-danger block to every action row; v1.0 nets have a narrower
+    action input and set it False."""
     options: List[Optional[Combo]] = list(game.legal_moves(player))
     if game.can_pass():
         options.append(None)
@@ -120,11 +165,11 @@ def encode_decision(
         v4 = encode_sa(game, player, m, ctx)
         cem = cem_move_features(game, player, m, units_keys)
         advice = float(cem @ champ_w) / 5.0
-        rows.append(
-            np.concatenate([v4, cem.astype(np.float32), [advice]]).astype(
-                np.float32
-            )
-        )
+        parts = [v4, cem.astype(np.float32),
+                 np.array([advice], dtype=np.float32)]
+        if include_danger:
+            parts.append(danger_features(game, player, m))
+        rows.append(np.concatenate(parts).astype(np.float32))
     return options, state, np.stack(rows)
 
 
@@ -143,7 +188,8 @@ def belief_target(game: Big2Game, player: int) -> np.ndarray:
 # ----------------------------------------------------------------------
 
 
-def build_net(d_model: int = 192, heads: int = 4, state_dim: int = STATE_DIM):
+def build_net(d_model: int = 192, heads: int = 4, state_dim: int = STATE_DIM,
+              act_dim: int = ACT_DIM):
     import torch
     import torch.nn as nn
 
@@ -152,12 +198,13 @@ def build_net(d_model: int = 192, heads: int = 4, state_dim: int = STATE_DIM):
             super().__init__()
             self.d = d_model
             self.state_dim = state_dim
+            self.act_dim = act_dim
             self.state_mlp = nn.Sequential(
                 nn.Linear(state_dim, d_model), nn.ReLU(),
                 nn.Linear(d_model, d_model), nn.ReLU(),
             )
             self.act_mlp = nn.Sequential(
-                nn.Linear(ACT_DIM, d_model), nn.ReLU(),
+                nn.Linear(act_dim, d_model), nn.ReLU(),
                 nn.Linear(d_model, d_model),
             )
             self.attn = nn.MultiheadAttention(d_model, heads, batch_first=True)
@@ -205,6 +252,7 @@ class PPOPolicy(Strategy):
         self.net = net
         self.net.eval()
         self.uses_profiles = getattr(net, "state_dim", STATE_DIM) != FEAT_DIM
+        self.uses_danger = getattr(net, "act_dim", ACT_DIM) >= ACT_DIM
         self.book: Optional[OpponentProfileBook] = None
         self.seat_keys: Optional[Dict[int, object]] = None
 
@@ -214,6 +262,7 @@ class PPOPolicy(Strategy):
         options, state, acts = encode_decision(
             game, player, book=self.book, seat_keys=self.seat_keys,
             include_profiles=self.uses_profiles,
+            include_danger=self.uses_danger,
         )
         if len(options) == 1:
             return options[0]
@@ -231,27 +280,32 @@ class PPOPolicy(Strategy):
 
         payload = torch.load(path, map_location="cpu", weights_only=True)
         in_dim = payload["state_dict"]["state_mlp.0.weight"].shape[1]
+        a_dim = payload["state_dict"]["act_mlp.0.weight"].shape[1]
         net = build_net(
             payload.get("d_model", 192), payload.get("heads", 4),
-            state_dim=in_dim,
+            state_dim=in_dim, act_dim=a_dim,
         )
         net.load_state_dict(payload["state_dict"])
         return cls(net)
 
 
-def widen_state_dict(sd: Dict, new_dim: int = STATE_DIM) -> Dict:
-    """Grow a checkpoint's state input with zero columns so a net trained
-    before opponent profiles can warm-start a profile-aware run (the new
-    features start with exactly zero influence)."""
+def widen_state_dict(sd: Dict, new_dim: int = STATE_DIM,
+                     new_act_dim: int = ACT_DIM) -> Dict:
+    """Grow a checkpoint's input layers with zero columns so an older net
+    can warm-start a wider run (new features begin with exactly zero
+    influence).  Handles both the state input (opponent profiles) and the
+    action input (v1.1 endgame-danger block, appended at the end)."""
     import torch
 
-    w = sd["state_mlp.0.weight"]
-    if w.shape[1] >= new_dim:
-        return sd
     sd = dict(sd)
-    wide = torch.zeros(w.shape[0], new_dim)
-    wide[:, : w.shape[1]] = w
-    sd["state_mlp.0.weight"] = wide
+    for key, dim in (("state_mlp.0.weight", new_dim),
+                     ("act_mlp.0.weight", new_act_dim)):
+        w = sd[key]
+        if w.shape[1] >= dim:
+            continue
+        wide = torch.zeros(w.shape[0], dim)
+        wide[:, : w.shape[1]] = w
+        sd[key] = wide
     return sd
 
 
@@ -442,6 +496,10 @@ def train_ppo(
     past_self_prob: float = 0.5,  # opponent-seat draw: past selves vs field
     exploit_target: Optional[str] = None,  # train a pure best response to
     #   this frozen checkpoint; probes then measure points extracted from it
+    fresh_bar: bool = False,  # don't inherit the resumed checkpoint's bar:
+    #   `out` records this run's own best (for new-version files where the
+    #   old champion file stays untouched)
+    note: Optional[str] = None,  # version label stored in saved meta
     verbose: bool = True,
 ):
     import torch
@@ -456,8 +514,9 @@ def train_ppo(
         net.load_state_dict(widen_state_dict(payload["state_dict"], STATE_DIM))
         # Don't let a resumed run overwrite a better checkpoint with its
         # first mediocre probe: inherit the saved best — unless this is an
-        # exploiter warm start, where the metric (vs-target) starts fresh.
-        if not exploit_target:
+        # exploiter warm start (metric starts fresh) or the run writes to
+        # a new version file that should record its own best.
+        if not exploit_target and not fresh_bar:
             best_probe = float(payload.get("meta", {}).get("probe", -1e9))
     opt = torch.optim.Adam(net.parameters(), lr=lr)
     rng = random.Random(seed)
@@ -694,12 +753,14 @@ def train_ppo(
                 )
                 if confirmed > best_probe:
                     best_probe = confirmed
+                    meta = {"iter": it, "games": total_games,
+                            "probe": confirmed,
+                            "confirm_games": confirm_games}
+                    if note:
+                        meta["note"] = note
                     _atomic_save(
                         {"state_dict": net.state_dict(), "d_model": d_model,
-                         "heads": heads,
-                         "meta": {"iter": it, "games": total_games,
-                                  "probe": confirmed,
-                                  "confirm_games": confirm_games}},
+                         "heads": heads, "meta": meta},
                         out,
                     )
                     print(
@@ -731,6 +792,11 @@ def main() -> None:
     parser.add_argument("--exploit-target", default=None,
                         help="freeze this checkpoint as the only opponent "
                              "and train a pure best response to it")
+    parser.add_argument("--fresh-bar", action="store_true",
+                        help="don't inherit the resumed checkpoint's best "
+                             "bar; --out records this run's own best")
+    parser.add_argument("--note", default=None,
+                        help="version label stored in the saved meta")
     args = parser.parse_args()
     train_ppo(
         iters=args.iters, games_per_iter=args.games_per_iter,
@@ -742,6 +808,8 @@ def main() -> None:
         past_self_prob=args.past_self_prob,
         confirm_games=args.confirm_games,
         exploit_target=args.exploit_target,
+        fresh_bar=args.fresh_bar,
+        note=args.note,
     )
 
 
