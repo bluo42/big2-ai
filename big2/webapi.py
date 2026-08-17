@@ -73,11 +73,17 @@ def make_ai(name: str, seed: Optional[int] = None) -> Strategy:
         except Exception:
             return SmartHeuristic()
     if name == "ppo":
-        # torch is a training-only dependency; serverless deploys fall back
+        # torch is training-only; deploys use the numpy inference port
         try:
             from big2.neural import PPOPolicy
 
             return PPOPolicy.load(_policy_path("ppo_attn.pt"))
+        except Exception:
+            pass
+        try:
+            from big2.ppo_numpy import NumpyPPOPolicy
+
+            return NumpyPPOPolicy.load(_policy_path("ppo_attn_np.npz"))
         except Exception:
             return SmartHeuristic()
     if name == "ismcts":
