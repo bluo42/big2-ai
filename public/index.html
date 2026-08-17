@@ -62,6 +62,7 @@
   .seg { display: inline-flex; border: 1px solid var(--line); border-radius: 9px; overflow: hidden; }
   .seg button { border: 0; border-radius: 0; padding: 8px 22px; background: transparent; }
   .seg button.on { background: var(--accent); font-weight: 700; }
+  .seg button:disabled { opacity: .4; cursor: not-allowed; transform: none; }
   .ai-row { display: flex; align-items: center; gap: 10px; margin-top: 10px; }
   .ai-row label { width: 44px; color: var(--muted); }
   .acct-row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
@@ -266,8 +267,8 @@
   <div class="panel">
     <h2>Opponents</h2>
     <div class="seg" id="numAiSeg">
-      <button data-n="1">1 AI</button>
-      <button data-n="2">2 AIs</button>
+      <button data-n="1" disabled title="coming back later">1 AI</button>
+      <button data-n="2" disabled title="coming back later">2 AIs</button>
       <button data-n="3" class="on">3 AIs</button>
     </div>
     <div id="aiRows"></div>
