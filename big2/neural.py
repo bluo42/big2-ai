@@ -207,29 +207,15 @@ class PPOPolicy(Strategy):
 
 
 def _opponent_pool() -> List[Strategy]:
-    pool: List[Strategy] = [SmartHeuristic(), FiveCardDumper()]
+    """Deliberately lean: the strongest scripted agent (dumper, per the
+    current baseline table) plus the CEM linear champion.  Weak opponents
+    dilute the best-response gradient; past-self snapshots and self-play
+    supply the diversity instead."""
+    pool: List[Strategy] = [FiveCardDumper()]
     try:
         pool.append(LinearPolicy.load("big2/policies/linear_cem.npz"))
     except Exception:
-        pass
-    try:
-        from big2.nn import NNPolicy
-
-        pool.append(NNPolicy.load("big2/policies/evo_mlp.npz"))
-    except Exception:
-        pass
-    try:
-        from big2.dmc import DMCPolicy
-
-        pool.append(DMCPolicy.load("big2/policies/dmc_linear.npz"))
-    except Exception:
-        pass
-    try:
-        from big2.decomposition import DecompositionStrategy
-
-        pool.append(DecompositionStrategy())
-    except Exception:
-        pass
+        pool.append(SmartHeuristic())
     return pool
 
 
