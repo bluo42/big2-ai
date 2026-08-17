@@ -233,9 +233,29 @@ def _opponent_pool() -> List[Strategy]:
     return pool
 
 
+# Worker-side cache of frozen past-self policies, keyed by (path, mtime)
+# so a refreshed snapshot file is reloaded exactly once per worker.
+_SNAP_CACHE: Dict[Tuple[str, float], "PPOPolicy"] = {}
+
+
+def _load_snapshot_policy(path: str) -> Optional["PPOPolicy"]:
+    try:
+        key = (path, os.path.getmtime(path))
+    except OSError:
+        return None
+    if key not in _SNAP_CACHE:
+        if len(_SNAP_CACHE) > 8:
+            _SNAP_CACHE.clear()
+        try:
+            _SNAP_CACHE[key] = PPOPolicy.load(path)
+        except Exception:
+            return None
+    return _SNAP_CACHE[key]
+
+
 def rollout_games(args) -> bytes:
     """Worker: play games with the given weights, return episode batch."""
-    state_bytes, n_games, seed, selfplay_prob = args
+    state_bytes, n_games, seed, selfplay_prob, snapshot_paths, past_self_prob = args
     import torch
 
     torch.set_num_threads(1)
@@ -245,6 +265,10 @@ def rollout_games(args) -> bytes:
     net.eval()
     rng = random.Random(seed)
     pool = _opponent_pool()
+    past_selves = [
+        p for p in (_load_snapshot_policy(pth) for pth in snapshot_paths)
+        if p is not None
+    ]
     episodes = []
 
     for _ in range(n_games):
@@ -253,9 +277,15 @@ def rollout_games(args) -> bytes:
             ppo_seats = set(range(4))
         else:
             ppo_seats = {rng.randrange(4)}
-        opponents = {
-            p: rng.choice(pool) for p in range(4) if p not in ppo_seats
-        }
+        opponents = {}
+        for p in range(4):
+            if p in ppo_seats:
+                continue
+            # League-style: previous generations sit at the table too.
+            if past_selves and rng.random() < past_self_prob:
+                opponents[p] = rng.choice(past_selves)
+            else:
+                opponents[p] = rng.choice(pool)
         game = Big2Game(
             scoring=ScoringConfig(), rules=DEFAULT_RULES, num_players=4,
             rng=random.Random(rng.randrange(2**31)),
@@ -342,6 +372,9 @@ def train_ppo(
     probe_games: int = 120,
     progress_path: str = "big2/policies/evolve/progress.csv",
     games_offset: int = 0,  # games trained in prior runs (resume bookkeeping)
+    snapshot_every_iters: int = 100,  # freeze a past-self opponent this often
+    max_snapshots: int = 3,
+    past_self_prob: float = 0.5,  # opponent-seat draw: past selves vs field
     verbose: bool = True,
 ):
     import torch
@@ -378,14 +411,34 @@ def train_ppo(
         except Exception:
             pass
 
+    snap_dir = os.path.join(os.path.dirname(out) or ".", "ppo_snapshots")
+    os.makedirs(snap_dir, exist_ok=True)
+
+    def _atomic_save(payload, path):
+        tmp = path + ".tmp"
+        torch.save(payload, tmp)
+        os.replace(tmp, path)
+
+    def _snapshot_paths() -> List[str]:
+        paths = sorted(
+            (os.path.join(snap_dir, f) for f in os.listdir(snap_dir)
+             if f.endswith(".pt")),
+            key=os.path.getmtime,
+        )
+        if os.path.exists(out):
+            paths.append(out)  # the best-so-far checkpoint plays too
+        return paths
+
     for it in range(1, iters + 1):
         blob = pickle.dumps(
             {"state_dict": net.state_dict(), "d_model": d_model, "heads": heads}
         )
         per = games_per_iter // workers
+        snaps = _snapshot_paths()
         results = pool.map(
             rollout_games,
-            [(blob, per, rng.randrange(2**31), selfplay_prob)
+            [(blob, per, rng.randrange(2**31), selfplay_prob, snaps,
+              past_self_prob)
              for _ in range(workers)],
         )
         episodes = [e for r in results for e in pickle.loads(r)]
@@ -464,6 +517,19 @@ def train_ppo(
                 flush=True,
             )
 
+        if snapshot_every_iters and it % snapshot_every_iters == 0:
+            slot = os.path.join(
+                snap_dir,
+                f"snap_{(it // snapshot_every_iters - 1) % max_snapshots}.pt",
+            )
+            _atomic_save(
+                {"state_dict": net.state_dict(), "d_model": d_model,
+                 "heads": heads},
+                slot,
+            )
+            if verbose:
+                print(f"[ppo] froze past-self snapshot -> {slot}", flush=True)
+
         if probe_every_iters and it % probe_every_iters == 0:
             policy = PPOPolicy(net)
             vs_base = _probe(
@@ -491,7 +557,7 @@ def train_ppo(
             score = vs_champ if vs_champ == vs_champ else vs_base
             if score > best_probe:
                 best_probe = score
-                torch.save(
+                _atomic_save(
                     {"state_dict": net.state_dict(), "d_model": d_model,
                      "heads": heads, "meta": {"iter": it, "games": total_games,
                                               "probe": score}},
@@ -517,6 +583,8 @@ def main() -> None:
     parser.add_argument("--resume", default=None)
     parser.add_argument("--probe-every-iters", type=int, default=30)
     parser.add_argument("--games-offset", type=int, default=0)
+    parser.add_argument("--snapshot-every-iters", type=int, default=100)
+    parser.add_argument("--past-self-prob", type=float, default=0.5)
     args = parser.parse_args()
     train_ppo(
         iters=args.iters, games_per_iter=args.games_per_iter,
@@ -524,6 +592,8 @@ def main() -> None:
         d_model=args.d_model, seed=args.seed, out=args.out,
         resume=args.resume, probe_every_iters=args.probe_every_iters,
         games_offset=args.games_offset,
+        snapshot_every_iters=args.snapshot_every_iters,
+        past_self_prob=args.past_self_prob,
     )
 
 

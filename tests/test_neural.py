@@ -65,15 +65,22 @@ class TestNetAndPPO(unittest.TestCase):
         # lambda=1: every return equals the terminal outcome
         np.testing.assert_allclose(ret, [1.0, 1.0, 1.0], atol=1e-6)
 
-    def test_tiny_training_iteration(self):
+    def test_tiny_training_iteration_with_snapshots(self):
+        import os
+        import tempfile
+
         from big2.neural import train_ppo
 
-        net = train_ppo(
-            iters=1, games_per_iter=4, workers=2, selfplay_prob=1.0,
-            minibatch=64, probe_every_iters=0, verbose=False, seed=0,
-            out="/tmp/claude-0/-home-user-ufc-fight-predictor/786cd9f2-0416-57d9-8745-7b1b71faba1e/scratchpad/ppo_test.pt",
-        )
-        self.assertIsNotNone(net)
+        with tempfile.TemporaryDirectory() as d:
+            out = os.path.join(d, "ppo_test.pt")
+            net = train_ppo(
+                iters=2, games_per_iter=4, workers=2, selfplay_prob=0.5,
+                minibatch=64, probe_every_iters=0, verbose=False, seed=0,
+                out=out, snapshot_every_iters=1, past_self_prob=0.9,
+            )
+            self.assertIsNotNone(net)
+            snaps = os.listdir(os.path.join(d, "ppo_snapshots"))
+            self.assertTrue(any(f.endswith(".pt") for f in snaps))
 
 
 if __name__ == "__main__":

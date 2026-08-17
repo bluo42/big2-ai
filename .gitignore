@@ -5,3 +5,4 @@ __pycache__/
 .venv/
 big2/policies/evolve/*
 !big2/policies/evolve/progress.csv
+big2/policies/ppo_snapshots/
