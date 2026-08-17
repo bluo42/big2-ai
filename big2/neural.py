@@ -368,13 +368,16 @@ def train_ppo(
     torch.manual_seed(seed)
     torch.set_num_threads(2)
     net = build_net(d_model, heads)
+    best_probe = -1e9
     if resume:
         payload = torch.load(resume, map_location="cpu", weights_only=True)
         net.load_state_dict(payload["state_dict"])
+        # Don't let a resumed run overwrite a better checkpoint with its
+        # first mediocre probe: inherit the saved best.
+        best_probe = float(payload.get("meta", {}).get("probe", -1e9))
     opt = torch.optim.Adam(net.parameters(), lr=lr)
     rng = random.Random(seed)
     pool = mp.Pool(workers)
-    best_probe = -1e9
     total_games = games_offset
     t0 = time.time()
 
