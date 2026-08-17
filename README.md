@@ -38,6 +38,30 @@ pip install -r requirements.txt
 python -m big2.server          # then open http://127.0.0.1:8080
 ```
 
+### Deploy to Vercel
+
+The app is stateless (the full game state travels with each request), so
+it runs as-is on Vercel's Python runtime — `vercel.json` routes every
+path to `api/index.py`, which serves the same Flask app you run locally.
+Two ways to deploy:
+
+1. **Import the repo** at [vercel.com/new](https://vercel.com/new),
+   pick this repository/branch, and deploy — no build settings needed.
+2. **CLI**: `npm i -g vercel && vercel` from the repo root.
+
+Note: because the client holds the full state (required for serverless),
+a determined player can inspect opponents' hands in dev tools — fine for
+a demo and exactly what the admin explorer wants; not for money games.
+
+### Game explorer (`/admin`)
+
+Watch how the strategies actually play: pick 2-4 agents, simulate games,
+and step through replays with **every hand exposed** — action-by-action
+cursor, trick-separated log, autoplay, keyboard navigation. The same
+page charts **training progress** while `big2.evolve` runs: probe scores
+vs fixed baselines (solid) and vs the anchor champions (dashed) per
+island, so you can see improvement and plateaus as games accumulate.
+
 - Choose **1, 2, or 3 AI opponents** (2-4 players total; with fewer than 4,
   the undealt cards stay hidden, and the lowest card actually in play opens).
 - Pick each AI: `Smart` (heuristic), `DMC` / `Linear` (trained), `ISMCTS`
@@ -96,6 +120,15 @@ assignment of the unseen cards to known opponent hand counts.
 Beliefs feed the DMC action encoding (P(opponent beats this move),
 P(holds a 2)), the Gym observation (per-rank belief maps), optional
 belief-weighted determinization in ISMCTS, and the UI belief panel.
+
+**Opponent modeling** (`big2/opponents.py`): each agent also watches how
+its opponents play — pass rate, rank aggression, multi-card tendency,
+2s spent — and uses it two ways: the pass-evidence weight adapts *per
+opponent* (a habitual passer's passes carry little information; a rare
+passer's pass is strong evidence), and the style vector plus
+feature-driven holding guesses (P(pair), P(triple) per opponent) are
+inputs to the v4 neural encoding, so learned agents condition on who
+they're playing against.
 
 ## League training: candidates vs the field
 

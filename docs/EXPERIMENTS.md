@@ -92,7 +92,7 @@ contributor can pick them up directly.
 | 5 | PPO + set-attention head + perfect-info critic + belief auxiliary | ➖ groundwork: exact belief module (`beliefs.py`) feeds features; MLP value nets exist; the learned belief head + policy-gradient head remain |
 | 6 | League / PSRO population | ➖ two rungs: `league.py` (population sampling + frozen checkpoints) and `evolve.py` (PBT islands: hyperparameter evolution, migration, agents-only matchups); exploiters + meta-solver missing |
 | 7 | Search at inference (policy prior + value + belief particles) | ⬜ planned (belief particles exist — `BeliefState.sample_worlds`) |
-| 8 | Runtime opponent adaptation, bounded deviation | ➖ primitive: pass-honesty likelihood weighting is a fixed opponent model; learned/adaptive models planned |
+| 8 | Runtime opponent adaptation, bounded deviation | ➖ statistical rung done: `opponents.py` tracks per-opponent style (pass rate, rank aggression, multi-card tendency) within a match, adapts pass-evidence weights per opponent, and feeds style + holding guesses into the v4 encoding; the neural opponent-embedding and bounded-deviation exploitation remain |
 
 **Step 2 — decomposition-optimal.** Minimum-plays hand decomposition is
 a solvable subproblem: memoized branch-and-bound over partitions,
@@ -202,6 +202,16 @@ distributions across the phase switch; ratings are vs a shifting field
 and a playoff rather than lifetime averages; and mutation never *grows*
 architectures mid-lineage (deeper nets enter via fresh sampling and
 exploit-adoption).
+
+**Plateau probes.** Ratings vs a shifting field cannot show absolute
+progress, so every N games each island freezes its current best and
+plays fixed probes *outside* the training distribution: seat-rotated 4p
+games vs scripted baselines (smart/decomp/dumper) and vs the anchor
+champions (the best agents from before this run). Rows go to
+``progress.csv`` and the admin page charts them — improvement curves
+and plateaus become visible per island, per lineage. All training and
+probing use the tiered house scoring only; other scoring variants are
+reserved for explicit variant experiments.
 
 **Step 5 — PPO with a set head.** Charlesworth (2018) already showed
 PPO self-play reaches strong human-competitive play in 4-player Big 2;
