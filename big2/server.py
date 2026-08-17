@@ -19,7 +19,9 @@ from flask import Flask, jsonify, request
 
 from big2 import webapi
 
-app = Flask(__name__, static_folder="static", static_url_path="")
+# Pages live in the repo-level public/ dir: Vercel serves them from its
+# edge (cleanUrls maps /admin -> admin.html); locally Flask serves them.
+app = Flask(__name__, static_folder="../public", static_url_path="")
 
 
 def _handle(fn):

@@ -155,7 +155,9 @@
     </div>
 
     <div class="panel">
-      <h2>Games</h2>
+      <h2>Games
+        <button id="loadPlayedBtn" style="float:right;padding:2px 10px;font-size:.72rem"></button>
+      </h2>
       <div id="gamesList"><table>
         <thead><tr><th>#</th><th>winner</th><th>scores</th><th>len</th></tr></thead>
         <tbody id="gamesBody"></tbody>
@@ -288,12 +290,44 @@ function renderGamesList() {
     const scores = Object.entries(r.scores)
       .map(([p, s]) => `<span class="${s >= 0 ? "pos" : "neg"}">${s >= 0 ? "+" : ""}${s}</span>`)
       .join(" ");
-    tr.innerHTML = `<td>${i + 1}</td><td>${r.players[r.winner]}</td>
+    const when = r.ts ? new Date(r.ts).toLocaleTimeString() : "";
+    tr.innerHTML = `<td>${i + 1}</td>
+      <td>${r.players[r.winner]}${r.source === "played" ? ` <span style="color:var(--muted);font-size:.68rem">${when}</span>` : ""}</td>
       <td>${scores}</td><td>${r.actions.length}</td>`;
     tr.addEventListener("click", () => openReplay(r));
     body.appendChild(tr);
   });
 }
+
+/* Games finished on the play page are logged to browser storage; load
+   them here with every hand exposed. */
+const PLAYED_LOG_KEY = "big2_played_games";
+
+function playedLog() {
+  try {
+    return JSON.parse(localStorage.getItem(PLAYED_LOG_KEY) || "[]");
+  } catch { return []; }
+}
+
+function refreshPlayedButton() {
+  const n = playedLog().length;
+  $("loadPlayedBtn").textContent = `played log (${n})`;
+  $("loadPlayedBtn").disabled = n === 0;
+}
+
+$("loadPlayedBtn").addEventListener("click", () => {
+  replays = playedLog().slice().reverse(); // newest first
+  cur = null;
+  $("replayPane").style.display = "none";
+  renderGamesList();
+  $("status").textContent = `${replays.length} played games loaded from this browser`;
+});
+
+refreshPlayedButton();
+setInterval(refreshPlayedButton, 30_000);
+
+// Deep-link: /admin opened with played games logged shows them by default.
+if (playedLog().length && !replays.length) $("loadPlayedBtn").click();
 
 /* ---------- replay ---------- */
 

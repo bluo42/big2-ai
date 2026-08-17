@@ -288,6 +288,7 @@
     <div class="btns">
       <button class="primary" id="againBtn">Play again</button>
       <button id="setupBtn">Change rules</button>
+      <button onclick="location.href='/admin'">Review in explorer</button>
     </div>
   </div>
 </div>
@@ -665,7 +666,7 @@ async function applyState(state) {
   updateControls();
   refreshBeliefs();
 
-  if (state.phase === "over") showGameOver();
+  if (state.phase === "over") { logFinishedGame(); showGameOver(); }
 }
 
 function nameOf(seat) {
@@ -679,6 +680,36 @@ function ruleChip(r) {
   bits.push(r.pass_locks ? "pass locks" : "soft pass");
   bits.push(r.flush_rank_first ? "flush by rank" : "flush by suit");
   return bits.join(" · ");
+}
+
+/* Every finished game is logged locally (browser storage) as a full
+   replay — browse them with all hands exposed in the /admin explorer. */
+const PLAYED_LOG_KEY = "big2_played_games";
+
+function logFinishedGame() {
+  try {
+    const hands = FS.hands.map((h) => [...h]);
+    for (const [p, cards] of FS.history) if (cards) hands[p].push(...cards);
+    hands.forEach((h) => h.sort((a, b) => a - b));
+    const replay = {
+      ts: Date.now(),
+      source: "played",
+      players: S.players.map((p) => p.name),
+      num_players: S.num_players,
+      rules: S.rules,
+      scoring: S.scoring,
+      start_card: S.start_card,
+      initial_hands: hands,
+      actions: S.history.map((h) => ({
+        p: h.player, cards: h.cards, type: h.type, te: h.trick_end,
+      })),
+      scores: S.scores,
+      winner: S.winner,
+    };
+    const log = JSON.parse(localStorage.getItem(PLAYED_LOG_KEY) || "[]");
+    log.push(replay);
+    localStorage.setItem(PLAYED_LOG_KEY, JSON.stringify(log.slice(-200)));
+  } catch (e) { /* storage full or disabled: play on */ }
 }
 
 function showGameOver() {
