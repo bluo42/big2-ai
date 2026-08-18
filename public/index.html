@@ -386,7 +386,7 @@ const AI_KINDS = ["ppo", "ppo11", "evo", "smart", "dmc", "ismcts", "decomp", "li
 const LOCKED_LINEUP = ["wangbot2", "khabib", "sicario"];
 const PUBLIC_KINDS = ["wangbot2", "khabib", "sicario"];
 const AI_LABEL = {
-  wangbot2: "WangBot_v2", khabib: "Khabib", sicario: "Sicario",
+  wangbot2: "v2", khabib: "Khabib", sicario: "Sicario",
   leonidas: "Leonidas",
   ppo: "PPO v1 (champion)", ppo11: "WangBot_v1 (endgame-aware)",
   evo: "Evo MLP (trained)", smart: "Smart (heuristic)",
@@ -468,7 +468,7 @@ function renderAiRows() {
   note.textContent = admin
     ? "Admin: any lineup and table size; games still record under each " +
       "model's version stamp."
-    : "You face the house table: WangBot_v2, Khabib, and Sicario — " +
+    : "You face the house table: v2, Khabib, and Sicario — " +
       "three different bots, seats shuffled every game.";
 }
 
@@ -1125,10 +1125,24 @@ const stampKind = (s) => {
 const kindLabel = (k) => KIND_NICE[k] || k;
 
 // The final slate: the shipped house bots, as their names appear in
-// recorded lineup stamps (model_stamp uses display labels, e.g.
-// WangBot_v2@20260818-...).  The leaderboard's default view shows only
-// matches against these.
-const FINAL_SLATE = ["WangBot_v2", "Khabib", "Sicario"];
+// recorded lineup stamps (model_stamp uses display labels).  The
+// wangbot2 line recorded as WangBot_v2 before its rename to v2 —
+// both spellings count.
+const FINAL_SLATE = ["WangBot_v2", "v2", "Khabib", "Sicario"];
+
+// A lineup's shape, e.g. "WangBot_v1 ×3" or "PPO v1 · WangBot_v1 ×2":
+// prior eras stay reachable in the dropdown, grouped by who was
+// actually at the table.
+function lineupShape(lineup) {
+  const counts = {};
+  for (const s of lineup || []) {
+    const k = String(s).split("@")[0];
+    counts[k] = (counts[k] || 0) + 1;
+  }
+  return Object.keys(counts).sort()
+    .map((k) => counts[k] > 1 ? `${k} ×${counts[k]}` : k)
+    .join(" · ");
+}
 
 // The board only counts games against the LATEST recorded version of
 // each model line — it resets on its own whenever new bots ship, and
@@ -1145,17 +1159,16 @@ function latestStamps() {
 }
 
 function lbAggregate() {
-  const filter = $("lbFilter").value || "all";
-  const current = latestStamps();
+  const filter = $("lbFilter").value || "slate";
   const by = {};
   for (const r of (LB && LB.rows) || []) {
-    if (!(r.lineup || []).every((s) => current.has(String(s)))) continue;
     const kinds = [...new Set((r.lineup || []).map(stampKind))];
     if (filter === "slate") {
       const raw = (r.lineup || []).map((s) => String(s).split("@")[0]);
       if (!raw.length || !raw.every((k) => FINAL_SLATE.includes(k)))
         continue;
-    } else if (filter !== "all" && !kinds.includes(filter)) continue;
+    } else if (filter !== "all" &&
+               lineupShape(r.lineup) !== filter) continue;
     const a = by[r.username] || (by[r.username] = {
       player: r.username, games: 0, wins: 0, total: 0, vs: new Set(),
     });
@@ -1220,10 +1233,18 @@ async function loadLeaderboard() {
     (r.lineup || []).forEach((s) => kinds.add(stampKind(s)));
   }
   const cur = sel.value || "slate";
+  // Prior eras get their own entries, grouped by table shape (the 3x
+  // lineups and friends); the house slate stays the default.
+  const shapes = new Set();
+  for (const r of (LB && LB.rows) || []) {
+    const raw = (r.lineup || []).map((s) => String(s).split("@")[0]);
+    if (raw.length && raw.every((k) => FINAL_SLATE.includes(k))) continue;
+    if (raw.length) shapes.add(lineupShape(r.lineup));
+  }
   sel.innerHTML = '<option value="slate">vs the house bots</option>' +
     '<option value="all">vs all models</option>' +
-    [...kinds].sort().map((k) =>
-      `<option value="${k}">vs ${kindLabel(k)}</option>`).join("");
+    [...shapes].sort().map((sh) =>
+      `<option value="${sh}">vs ${sh}</option>`).join("");
   sel.value = [...sel.options].some((o) => o.value === cur) ? cur : "slate";
   renderLeaderboard();
 }

@@ -147,7 +147,7 @@ AI_KINDS = [
 
 # Public display names where they differ from the internal kind (the
 # kind string stays stable so serialized games keep deserializing).
-KIND_LABEL = {"ppo11": "WangBot_v1", "wangbot2": "WangBot_v2",
+KIND_LABEL = {"ppo11": "WangBot_v1", "wangbot2": "v2",
               "sicario": "Sicario", "leonidas": "Leonidas",
               "khabib": "Khabib"}
 
