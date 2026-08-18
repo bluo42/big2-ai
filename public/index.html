@@ -422,12 +422,15 @@
 const RANKS = ["3","4","5","6","7","8","9","10","J","Q","K","A","2"];
 const SUITS = ["♦","♣","♥","♠"]; // diamonds clubs hearts spades
 const AI_KINDS = ["ppo", "ppo11", "evo", "smart", "dmc", "ismcts", "decomp", "linear", "dumper", "lowest", "highest", "random"];
-// The locked default table: the three chain finals, one seat each,
-// order shuffled every game.  Admins keep the full kind list.
-const LOCKED_LINEUP = ["wangbot2", "sicario", "leonidas"];
-const PUBLIC_KINDS = ["wangbot2", "sicario", "leonidas"];
+// The locked default table, tournament-tuned against a strong
+// exploitative player: WangBot_v2 + Leonidas + Chain D held that
+// style to -0.51/game while staying three distinct bots.  Order
+// shuffles every game.  Admins keep the full kind list.
+const LOCKED_LINEUP = ["wangbot2", "leonidas", "chaind"];
+const PUBLIC_KINDS = ["wangbot2", "leonidas", "chaind"];
 const AI_LABEL = {
   wangbot2: "WangBot_v2", sicario: "Sicario", leonidas: "Leonidas",
+  chaind: "Chain D",
   ppo: "PPO v1 (champion)", ppo11: "WangBot_v1 (endgame-aware)",
   evo: "Evo MLP (trained)", smart: "Smart (heuristic)",
   dmc: "DMC (trained)", ismcts: "ISMCTS (search)", decomp: "Decomposition",
@@ -499,7 +502,7 @@ function renderAiRows() {
   note.textContent = admin
     ? "Admin: any lineup and table size; games still record under each " +
       "model's version stamp."
-    : "You face the house table: WangBot_v2, Sicario, and Leonidas — " +
+    : "You face the house table: WangBot_v2, Leonidas, and Chain D — " +
       "three different bots, seats shuffled every game.";
 }
 

@@ -93,10 +93,10 @@ def make_ai(name: str, seed: Optional[int] = None) -> Strategy:
             return NNPolicy.load(_policy_path("evo_mlp.npz"))
         except Exception:
             return SmartHeuristic()
-    if name in ("wangbot2", "sicario", "leonidas"):
+    if name in ("wangbot2", "sicario", "leonidas", "chaind"):
         # The chain finals (2026-08-18): the locked default table.
         stems = {"wangbot2": "wangbot_v2", "sicario": "sicario_v1",
-                 "leonidas": "leonidas_v1"}
+                 "leonidas": "leonidas_v1", "chaind": "chain_d"}
         try:
             from big2.neural import PPOPolicy
 
@@ -140,7 +140,7 @@ def make_ai(name: str, seed: Optional[int] = None) -> Strategy:
 
 
 AI_KINDS = [
-    "wangbot2", "sicario", "leonidas",
+    "wangbot2", "sicario", "leonidas", "chaind",
     "smart", "ppo", "ppo11", "evo", "dmc", "ismcts", "decomp", "linear",
     "dumper", "lowest", "highest", "random",
 ]
@@ -148,7 +148,8 @@ AI_KINDS = [
 # Public display names where they differ from the internal kind (the
 # kind string stays stable so serialized games keep deserializing).
 KIND_LABEL = {"ppo11": "WangBot_v1", "wangbot2": "WangBot_v2",
-              "sicario": "Sicario", "leonidas": "Leonidas"}
+              "sicario": "Sicario", "leonidas": "Leonidas",
+              "chaind": "Chain D"}
 
 _POLICY_FILES = {
     "ppo": "ppo_attn.pt",
@@ -156,6 +157,7 @@ _POLICY_FILES = {
     "wangbot2": "wangbot_v2.pt",
     "sicario": "sicario_v1.pt",
     "leonidas": "leonidas_v1.pt",
+    "chaind": "chain_d.pt",
     "evo": "evo_mlp.npz",
     "linear": "linear_cem.npz",
     "dmc": "dmc_linear.npz",

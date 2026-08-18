@@ -18,10 +18,10 @@ from collections import defaultdict
 from itertools import combinations_with_replacement
 
 MODELS = {
-    "A": "big2/policies/ladder_A_final.pt",
-    "B": "big2/policies/ladder_B_final.pt",
-    "C": "big2/policies/chain_C.pt",
-    "D": "big2/policies/chain_D.pt",
+    "A": "big2/policies/wangbot_v2.pt",
+    "B": "big2/policies/sicario_v1.pt",
+    "C": "big2/policies/leonidas_v1.pt",
+    "D": "big2/policies/chain_d.pt",
 }
 REFS = {
     "ppo_v1": "big2/policies/ppo_attn.pt",
