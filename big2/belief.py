@@ -134,6 +134,48 @@ def analytic_posterior(
     return np.clip(out, 0.0, 1.0)
 
 
+EVIDENCE_PLANES = 3  # played / declined-combo / declined-above
+
+
+def evidence_planes(game: Big2Game, player: int) -> np.ndarray:
+    """(3 opponents, 3 planes, 52) — what their own play has revealed.
+
+    The generic state vector summarises history; inference needs it at
+    card granularity, per opponent:
+
+    0. **played**: cards this opponent has actually put on the table.
+       They cannot hold them, and *what* they spent says how their hand
+       was shaped.
+    1. **declined**: the exact cards of a combo they passed on.
+    2. **declined-above**: for a single they passed on, every card that
+       would have beaten it.  This is the strongest inference in the
+       game — passing on the 9 of hearts is evidence against holding
+       anything above it — and it is the one signal a bag-of-counts
+       posterior can never represent.
+    """
+    n = game.num_players
+    order = opponent_order(game, player)
+    idx = {p: j for j, p in enumerate(order)}
+    planes = np.zeros((3, EVIDENCE_PLANES, NUM_CARDS), dtype=np.float32)
+    table: Optional[object] = None
+    for rec in game.history:
+        j = idx.get(rec.player)
+        if rec.combo is not None:
+            if j is not None:
+                for c in rec.combo.cards:
+                    planes[j, 0, c] = 1.0
+            table = rec.combo
+        elif table is not None and j is not None:
+            for c in table.cards:
+                planes[j, 1, c] = 1.0
+            if len(table) == 1:
+                top = table.cards[0]
+                planes[j, 2, top + 1:] = 1.0
+        if rec.trick_end:
+            table = None
+    return planes
+
+
 def collect_samples(
     n_games: int,
     policies: Optional[Sequence] = None,
@@ -150,6 +192,7 @@ def collect_samples(
                     FiveCardDumper()]
     rng = random.Random(seed)
     states, revs, masks, sizes, truths, priors = [], [], [], [], [], []
+    evid: List[np.ndarray] = []
     for g in range(n_games):
         game = Big2Game(scoring=ScoringConfig(), rules=DEFAULT_RULES,
                         num_players=4, rng=random.Random(rng.randrange(2**31)))
@@ -162,6 +205,7 @@ def collect_samples(
                 frac = rng.uniform(*reveal_range)
                 rev = reveal_split(truth, frac, rng)
                 m, z = candidate_mask(game, p), hand_sizes(game, p)
+                evid.append(evidence_planes(game, p))
                 states.append(state)
                 revs.append(rev)
                 masks.append(m)
@@ -176,6 +220,7 @@ def collect_samples(
         "mask": np.stack(masks),
         "sizes": np.stack(sizes),
         "prior": np.stack(priors),
+        "evidence": np.stack(evid),
         "truth": np.stack(truths),
     }
 
@@ -192,6 +237,7 @@ def samples_from_replays(
 
     rng = random.Random(seed)
     states, revs, masks, sizes, truths, priors = [], [], [], [], [], []
+    evid: List[np.ndarray] = []
     for row in rows:
         body = _replay_body(row)
         if body is None:
@@ -203,6 +249,7 @@ def samples_from_replays(
             truth = truth_matrix(game, p)
             rev = reveal_split(truth, rng.uniform(*reveal_range), rng)
             m, z = candidate_mask(game, p), hand_sizes(game, p)
+            evid.append(evidence_planes(game, p))
             states.append(state)
             revs.append(rev)
             masks.append(m)
@@ -217,6 +264,7 @@ def samples_from_replays(
         "mask": np.stack(masks),
         "sizes": np.stack(sizes),
         "prior": np.stack(priors),
+        "evidence": np.stack(evid),
         "truth": np.stack(truths),
     }
 
@@ -269,7 +317,11 @@ def build_net(state_dim: int, hidden: int = 256):
             super().__init__()
             self.state_dim = state_dim
             self.trunk = nn.Sequential(
-                nn.Linear(state_dim + BELIEF_SLOTS + 3, hidden), nn.ReLU(),
+                nn.Linear(
+                    state_dim + BELIEF_SLOTS
+                    + 3 * EVIDENCE_PLANES * NUM_CARDS + 3,
+                    hidden,
+                ), nn.ReLU(),
                 nn.Linear(hidden, hidden), nn.ReLU(),
             )
             self.head = nn.Linear(hidden, BELIEF_SLOTS)
@@ -280,10 +332,11 @@ def build_net(state_dim: int, hidden: int = 256):
             nn.init.zeros_(self.head.weight)
             nn.init.zeros_(self.head.bias)
 
-        def forward(self, state, revealed, sizes):
+        def forward(self, state, revealed, sizes, evidence):
             x = self.trunk(
                 __import__("torch").cat(
-                    [state, revealed.flatten(1), sizes], dim=1
+                    [state, revealed.flatten(1), evidence.flatten(1), sizes],
+                    dim=1,
                 )
             )
             return self.head(x).view(-1, 3, NUM_CARDS)
@@ -299,12 +352,44 @@ def _prior_logit(prior):
     )
 
 
-def predict(net, state, revealed, mask, sizes, prior):
-    """Masked, count-normalised probabilities (prior + learned delta)."""
+def calibrate(net, data: Dict[str, np.ndarray], grid=None) -> float:
+    """Fit how far to trust the learned correction.
+
+    The residual improves *ranking* (it knows which cards are likelier)
+    but arrives overconfident, and the analytic prior it corrects is
+    perfectly calibrated by construction — so raw deltas trade a real
+    gain in top-k for a real loss in Brier.  Scaling the delta by a
+    single scalar fixed on held-out data is the standard remedy
+    (temperature scaling); alpha=0 recovers the analytic prior exactly,
+    so this can never end up worse than the baseline it started from.
+    """
+    import torch
+
+    grid = grid if grid is not None else [
+        0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.7, 1.0
+    ]
+    S = torch.from_numpy(data["state"])
+    R = torch.from_numpy(data["revealed"])
+    M = torch.from_numpy(data["mask"])
+    Z = torch.from_numpy(data["sizes"])
+    P0 = torch.from_numpy(data["prior"])
+    E = torch.from_numpy(data["evidence"])
+    best_alpha, best_loss = 0.0, float("inf")
+    for a in grid:
+        pred = predict(net, S, R, M, Z, P0, E, alpha=a).numpy()
+        loss = calibration_report(pred, data["truth"], data["mask"])["logloss"]
+        if loss < best_loss:
+            best_alpha, best_loss = a, loss
+    return best_alpha
+
+
+def predict(net, state, revealed, mask, sizes, prior, evidence,
+            alpha: float = 1.0):
+    """Masked, count-normalised probabilities (prior + alpha * delta)."""
     import torch
 
     with torch.no_grad():
-        delta = net(state, revealed, sizes)
+        delta = net(state, revealed, sizes, evidence) * alpha
     p = torch.sigmoid(_prior_logit(prior) + delta) * mask
     # a revealed card is certain; the rest share what is left of the hand
     known = revealed * mask
@@ -335,6 +420,7 @@ def train(
     Z = torch.from_numpy(data["sizes"])
     Y = torch.from_numpy(data["truth"])
     P0 = _prior_logit(torch.from_numpy(data["prior"]))
+    E = torch.from_numpy(data["evidence"])
     if net is None:
         net = build_net(S.shape[1], hidden=hidden)
     opt = torch.optim.Adam(net.parameters(), lr=lr)
@@ -344,7 +430,7 @@ def train(
         tot = 0.0
         for start in range(0, n, minibatch):
             idx = perm[start : start + minibatch]
-            logits = P0[idx] + net(S[idx], R[idx], Z[idx])
+            logits = P0[idx] + net(S[idx], R[idx], Z[idx], E[idx])
             m = M[idx]
             bce = torch.nn.functional.binary_cross_entropy_with_logits(
                 logits, Y[idx], weight=m, reduction="sum"
@@ -364,7 +450,8 @@ def train(
     return net
 
 
-def evaluate(net, data: Dict[str, np.ndarray]) -> Dict[str, Dict[str, float]]:
+def evaluate(net, data: Dict[str, np.ndarray],
+             alpha: float = 1.0) -> Dict[str, Dict[str, float]]:
     """Learned posterior vs the analytic baseline, on the same states."""
     import torch
 
@@ -373,7 +460,8 @@ def evaluate(net, data: Dict[str, np.ndarray]) -> Dict[str, Dict[str, float]]:
     M = torch.from_numpy(data["mask"])
     Z = torch.from_numpy(data["sizes"])
     P0 = torch.from_numpy(data["prior"])
-    pred = predict(net, S, R, M, Z, P0).numpy()
+    E = torch.from_numpy(data["evidence"])
+    pred = predict(net, S, R, M, Z, P0, E, alpha=alpha).numpy()
     base = data["prior"]
     return {
         "learned": calibration_report(pred, data["truth"], data["mask"]),
@@ -410,8 +498,11 @@ def main() -> None:
     print(f"[belief] {len(train_data['state'])} training states", flush=True)
     net = train(train_data, epochs=args.epochs, hidden=args.hidden)
 
+    calib = collect_samples(max(100, args.eval_games // 3), seed=555)
+    alpha = calibrate(net, calib)
+    print(f"[belief] calibrated residual weight alpha={alpha}", flush=True)
     held = collect_samples(args.eval_games, seed=999)
-    report = evaluate(net, held)
+    report = evaluate(net, held, alpha=alpha)
     print("\n=== held-out calibration (lower is better except top-k) ===")
     for name, r in report.items():
         print(f"  {name:9s} brier {r['brier']:.4f}  logloss {r['logloss']:.4f}"
@@ -419,6 +510,7 @@ def main() -> None:
     torch.save({"state_dict": net.state_dict(),
                 "state_dim": net.state_dim,
                 "hidden": args.hidden,
+                "alpha": alpha,
                 "report": report}, args.out)
     print(f"[belief] saved -> {args.out}")
 
