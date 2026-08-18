@@ -380,8 +380,14 @@
 const RANKS = ["3","4","5","6","7","8","9","10","J","Q","K","A","2"];
 const SUITS = ["♦","♣","♥","♠"]; // diamonds clubs hearts spades
 const AI_KINDS = ["ppo", "ppo11", "evo", "smart", "dmc", "ismcts", "decomp", "linear", "dumper", "lowest", "highest", "random"];
-const PUBLIC_KINDS = ["ppo", "ppo11"];  // everyone picks between the two PPO lines
+// The locked house table: three distinct chain bots, seats shuffled
+// every game.  Non-admins get no model choice — the chips below just
+// show who is sitting down.
+const LOCKED_LINEUP = ["wangbot2", "khabib", "sicario"];
+const PUBLIC_KINDS = ["wangbot2", "khabib", "sicario"];
 const AI_LABEL = {
+  wangbot2: "WangBot_v2", khabib: "Khabib", sicario: "Sicario",
+  leonidas: "Leonidas",
   ppo: "PPO v1 (champion)", ppo11: "WangBot_v1 (endgame-aware)",
   evo: "Evo MLP (trained)", smart: "Smart (heuristic)",
   dmc: "DMC (trained)", ismcts: "ISMCTS (search)", decomp: "Decomposition",
@@ -422,8 +428,17 @@ function renderAiRows() {
   const rows = $("aiRows");
   const prev = [...rows.querySelectorAll("select")].map((s) => s.value);
   rows.innerHTML = "";
-  // Public players pick ONE model and it fills every AI seat; admins
-  // still compose mixed tables seat by seat.
+  if (!admin) {
+    // Locked for players: no choice — the house three, shuffled seats.
+    const row = document.createElement("div");
+    row.className = "ai-row";
+    row.innerHTML = LOCKED_LINEUP.map((k) =>
+      `<span style="border:1px solid var(--line);border-radius:999px;` +
+      `padding:3px 12px;font-size:.8rem">${AI_LABEL[k] || k}</span>`
+    ).join(" ");
+    rows.appendChild(row);
+    return;
+  }
   const seats = admin ? numAi : 1;
   for (let i = 1; i <= seats; i++) {
     const row = document.createElement("div");
@@ -453,9 +468,8 @@ function renderAiRows() {
   note.textContent = admin
     ? "Admin: any lineup and table size; games still record under each " +
       "model's version stamp."
-    : "Your pick plays every AI seat. WangBot_v1 (default) is trained " +
-      "with endgame awareness of opponents' card counts; PPO v1 is the " +
-      "previous champion.";
+    : "You face the house table: WangBot_v2, Khabib, and Sicario — " +
+      "three different bots, seats shuffled every game.";
 }
 
 $("numAiSeg").addEventListener("click", (e) => {
@@ -469,11 +483,14 @@ $("numAiSeg").addEventListener("click", (e) => {
 function currentSettings() {
   // House rules are fixed for players; admins can deal rule variants.
   const sels = [...$("aiRows").querySelectorAll("select")];
+  // Players always face the locked lineup, freshly shuffled; a 1-2 AI
+  // table draws a random subset of the three.
+  const shuffled = [...LOCKED_LINEUP].sort(() => Math.random() - 0.5);
   const s = {
     num_ai: numAi,
     ai: isAdmin()
       ? sels.map((sel) => sel.value)
-      : Array(numAi).fill(sels[0].value),  // one model, every seat
+      : shuffled.slice(0, numAi),
   };
   if (isAdmin()) {
     s.rules = {
@@ -1107,6 +1124,10 @@ const stampKind = (s) => {
 };
 const kindLabel = (k) => KIND_NICE[k] || k;
 
+// The final slate: the shipped house bots.  The leaderboard's default
+// view shows only matches against these.
+const FINAL_SLATE = ["wangbot2", "khabib", "sicario"];
+
 // The board only counts games against the LATEST recorded version of
 // each model line — it resets on its own whenever new bots ship, and
 // records against retired versions stop mixing into the totals.
@@ -1128,7 +1149,11 @@ function lbAggregate() {
   for (const r of (LB && LB.rows) || []) {
     if (!(r.lineup || []).every((s) => current.has(String(s)))) continue;
     const kinds = [...new Set((r.lineup || []).map(stampKind))];
-    if (filter !== "all" && !kinds.includes(filter)) continue;
+    if (filter === "slate") {
+      const raw = (r.lineup || []).map((s) => String(s).split("@")[0]);
+      if (!raw.length || !raw.every((k) => FINAL_SLATE.includes(k)))
+        continue;
+    } else if (filter !== "all" && !kinds.includes(filter)) continue;
     const a = by[r.username] || (by[r.username] = {
       player: r.username, games: 0, wins: 0, total: 0, vs: new Set(),
     });
@@ -1145,9 +1170,12 @@ function renderLeaderboard() {
   if (!LB || !LB.rows) { box.textContent = "leaderboard unavailable"; return; }
   const rows = lbAggregate();
   if (!rows.length) {
-    box.textContent = $("lbFilter").value === "all" || !$("lbFilter").value
-      ? "no recorded games yet — sign in and be first on the board"
-      : "no recorded games against this model yet";
+    const f = $("lbFilter").value;
+    box.textContent = f === "slate" || !f
+      ? "no games against the house bots yet — sign in and be first on the board"
+      : f === "all"
+        ? "no recorded games yet — sign in and be first on the board"
+        : "no recorded games against this model yet";
     return;
   }
   for (const a of rows) {
@@ -1189,11 +1217,12 @@ async function loadLeaderboard() {
   for (const r of (LB && LB.rows) || []) {
     (r.lineup || []).forEach((s) => kinds.add(stampKind(s)));
   }
-  const cur = sel.value || "all";
-  sel.innerHTML = '<option value="all">vs all models</option>' +
+  const cur = sel.value || "slate";
+  sel.innerHTML = '<option value="slate">vs the house bots</option>' +
+    '<option value="all">vs all models</option>' +
     [...kinds].sort().map((k) =>
       `<option value="${k}">vs ${kindLabel(k)}</option>`).join("");
-  sel.value = [...sel.options].some((o) => o.value === cur) ? cur : "all";
+  sel.value = [...sel.options].some((o) => o.value === cur) ? cur : "slate";
   renderLeaderboard();
 }
 $("lbBtn").addEventListener("click", loadLeaderboard);
