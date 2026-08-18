@@ -440,6 +440,50 @@ def confirmation_panel(
     return panel
 
 
+def diet_confirm(
+    policy: Strategy,
+    n_games: int,
+    scoring,
+    rules,
+    seed: int,
+    snapshot_paths: Sequence[str] = (),
+    past_self_prob: float = 0.5,
+) -> float:
+    """Large-sample confirmation on the *training* distribution.
+
+    Same seat mix the rollouts use -- one wildcard from the whole
+    collection, the rest lean pool + past selves -- with fresh deals
+    every game.  A candidate that only shines against exotic panel
+    seatings or lucky cards does not survive this; one that genuinely
+    beats its own diet does.  This is the number the best-file gate
+    trusts, so it is run at a much larger sample than the probes.
+    """
+    rng = random.Random(seed)
+    pool = _opponent_pool()
+    past = [p for p in (_load_snapshot_policy(pth)
+                        for pth in snapshot_paths) if p is not None]
+    total = 0.0
+    for g in range(n_games):
+        seat = g % 4
+        opponents = {}
+        others = [p for p in range(4) if p != seat]
+        rng.shuffle(others)
+        for j, p in enumerate(others):
+            if j == 0:
+                opponents[p] = rng.choice(_wide_collection())
+            elif past and rng.random() < past_self_prob:
+                opponents[p] = rng.choice(past)
+            else:
+                opponents[p] = rng.choice(pool)
+        seats = [policy if p == seat else opponents[p] for p in range(4)]
+        game = Big2Game(
+            scoring=scoring, rules=rules, num_players=4,
+            rng=random.Random(rng.randrange(2**31)),
+        )
+        total += game.play_out(seats)[seat]
+    return total / n_games
+
+
 def panel_probe(
     policy: Strategy,
     panel: Sequence[Strategy],
@@ -605,12 +649,17 @@ def rollout_games(args) -> bytes:
         else:
             ppo_seats = {rng.randrange(n_seats)}
         opponents = {}
-        for p in range(n_seats):
-            if p in ppo_seats:
-                continue
-            # A wildcard seat from the whole collection keeps styles the
-            # lean pool lacks in circulation.
-            if wildcard_prob and rng.random() < wildcard_prob:
+        others = [p for p in range(n_seats) if p not in ppo_seats]
+        rng.shuffle(others)
+        for j, p in enumerate(others):
+            # One seat per table is DEDICATED to a wildcard from the
+            # whole collection; the rest draw lean pool + past selves.
+            # Heads-up tables have only one opponent seat, so there the
+            # wildcard takes it 1 game in 3 -- its 4p share.
+            wildcard = wildcard_prob > 0 and (
+                j == 0 if len(others) >= 2 else rng.random() < 1 / 3
+            )
+            if wildcard:
                 opponents[p] = rng.choice(_wide_collection())
             # League-style: previous generations sit at the table too.
             elif past_selves and rng.random() < past_self_prob:
@@ -741,13 +790,21 @@ def train_ppo(
     #   matchup, not strength.  Forced off for exploiter runs, where
     #   points extracted from the single target is the entire metric.
     note: Optional[str] = None,  # version label stored in saved meta
+    device: str = "auto",  # learner device: cuda when available, else
+    #   cpu.  Rollout workers always run cpu -- batch-1 inference in a
+    #   Python game loop loses more to transfer than a GPU gives back;
+    #   what a GPU accelerates is the minibatch learner below.
     verbose: bool = True,
 ):
     import torch
 
     torch.manual_seed(seed)
     torch.set_num_threads(2)
+    if device == "auto":
+        device = "cuda" if torch.cuda.is_available() else "cpu"
+    dev = torch.device(device)
     net = build_net(d_model, heads, layers=layers)
+    net.to(dev)
     best_probe = -1e9
     if resume:
         payload = torch.load(resume, map_location="cpu", weights_only=True)
@@ -827,8 +884,8 @@ def train_ppo(
 
     for it in range(1, iters + 1):
         blob = pickle.dumps(
-            {"state_dict": net.state_dict(), "d_model": d_model, "heads": heads,
-             "layers": layers}
+            {"state_dict": {k: v.cpu() for k, v in net.state_dict().items()},
+             "d_model": d_model, "heads": heads, "layers": layers}
         )
         per = games_per_iter // workers
         snaps = [] if exploit_target else _snapshot_paths()
@@ -870,6 +927,10 @@ def train_ppo(
         ADV = (ADV - ADV.mean()) / (ADV.std() + 1e-6)
         RET = torch.tensor(np.asarray(flat_ret))
         B = torch.from_numpy(np.stack(flat_belief))
+        if dev.type != "cpu":
+            S, A_, M, C = S.to(dev), A_.to(dev), M.to(dev), C.to(dev)
+            LP, ADV, RET, B = (LP.to(dev), ADV.to(dev), RET.to(dev),
+                               B.to(dev))
         n = len(S)
 
         pol_loss = val_loss = ent = bel_loss = 0.0
@@ -920,7 +981,8 @@ def train_ppo(
                 f"snap_{(it // snapshot_every_iters - 1) % max_snapshots}.pt",
             )
             _atomic_save(
-                {"state_dict": net.state_dict(), "d_model": d_model,
+                {"state_dict": {k: v.cpu() for k, v in net.state_dict().items()},
+                 "d_model": d_model,
                  "heads": heads, "layers": layers},
                 slot,
             )
@@ -928,7 +990,14 @@ def train_ppo(
                 print(f"[ppo] froze past-self snapshot -> {slot}", flush=True)
 
         if probe_every_iters and it % probe_every_iters == 0:
-            policy = PPOPolicy(net)
+            if dev.type == "cpu":
+                policy = PPOPolicy(net)
+            else:
+                twin = build_net(d_model, heads, layers=layers)
+                twin.load_state_dict(
+                    {k: v.cpu() for k, v in net.state_dict().items()}
+                )
+                policy = PPOPolicy(twin)
             vs_base = _probe(
                 policy, probe_baselines, probe_games, ScoringConfig(),
                 DEFAULT_RULES, seed=it,
@@ -996,7 +1065,8 @@ def train_ppo(
                 # whatever the confirmation decides about shipping it.
                 bpath = os.path.join(snap_dir, f"breakout_{it}.pt")
                 _atomic_save(
-                    {"state_dict": net.state_dict(), "d_model": d_model,
+                    {"state_dict": {k: v.cpu() for k, v in net.state_dict().items()},
+                 "d_model": d_model,
                      "heads": heads, "layers": layers},
                     bpath,
                 )
@@ -1012,9 +1082,15 @@ def train_ppo(
                 # would-be best must confirm on an independent larger
                 # re-test; the confirmed number is what gets recorded.
                 if confirm_panel:
-                    confirmed = panel_probe(
-                        policy, panel, confirm_games, ScoringConfig(),
+                    # Probe said "beats the field"; confirmation asks the
+                    # question the file actually stands for -- does it
+                    # beat its own training diet, at a sample size where
+                    # deal luck is gone and every deal is fresh.
+                    confirmed = diet_confirm(
+                        policy, confirm_games, ScoringConfig(),
                         DEFAULT_RULES, seed=it + 7919,
+                        snapshot_paths=_snapshot_paths(),
+                        past_self_prob=past_self_prob,
                     )
                 else:
                     opponents = (
@@ -1038,7 +1114,8 @@ def train_ppo(
                     if note:
                         meta["note"] = note
                     _atomic_save(
-                        {"state_dict": net.state_dict(), "d_model": d_model,
+                        {"state_dict": {k: v.cpu() for k, v in net.state_dict().items()},
+                 "d_model": d_model,
                          "heads": heads, "layers": layers, "meta": meta},
                         out,
                     )
@@ -1089,6 +1166,8 @@ def main() -> None:
                              "the mixed field of diet, peers and past "
                              "selves (--no-confirm-panel restores the "
                              "fixed-reference metric)")
+    parser.add_argument("--device", default="auto",
+                        help="learner device: auto (cuda when available), cuda, or cpu")
     parser.add_argument("--note", default=None,
                         help="version label stored in the saved meta")
     args = parser.parse_args()
@@ -1109,6 +1188,7 @@ def main() -> None:
         num_players=args.num_players,
         confirm_panel=args.confirm_panel,
         note=args.note,
+        device=args.device,
     )
 
 
