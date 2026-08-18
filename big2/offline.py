@@ -200,6 +200,96 @@ def build_dataset(
     }
 
 
+def build_advantage_dataset(
+    rows: Sequence[Dict],
+    model,
+    opponents: Optional[Sequence] = None,
+    seats: str = "human",
+    rollouts: int = 16,
+    beta: float = 2.0,
+    max_weight: float = 8.0,
+    min_advantage: float = 0.25,
+    max_games: Optional[int] = None,
+) -> Dict[str, np.ndarray]:
+    """Learn only from moves that *measurably* beat the model's choice.
+
+    Weighting imitation by the final score is confounded in Big 2: a
+    player who won by fifteen may simply have been dealt a monster, and
+    every move they made inherits that credit.  Here each decision is
+    judged on its own — the recorded move and the model's preferred move
+    are both played out from the same position over belief-sampled
+    deals, and the gap between them is the advantage.
+
+    Only positions where the recorded move actually won the comparison
+    are kept, so the training signal is "here is a spot you get wrong,
+    and here is what beats it" rather than "this player had a good day".
+    """
+    from big2.critique import move_ev
+    from big2.endgame import move_key
+    from big2.neural import encode_decision
+    from big2.strategies import SmartHeuristic
+
+    opponents = list(opponents or [model, SmartHeuristic()])
+    states, acts, chosen, weights = [], [], [], []
+    seen_games = 0
+    for row in rows:
+        body = _replay_body(row)
+        if body is None:
+            continue
+        if max_games and seen_games >= max_games:
+            break
+        seen_games += 1
+        user_seat = int(row.get("user_seat", body.get("user_seat", 0)))
+        for game, p, cards in iter_decisions(body):
+            if seats == "human" and p != user_seat:
+                continue
+            options, state, act_rows = encode_decision(game, p)
+            if len(options) < 2:
+                continue
+            key = None if not cards else tuple(sorted(int(c) for c in cards))
+            idx = next(
+                (i for i, m in enumerate(options)
+                 if (None if m is None else tuple(sorted(m.cards))) == key),
+                None,
+            )
+            if idx is None:
+                continue
+            model_key = move_key(model.select(game, p))
+            if model_key == key:
+                continue  # already agrees: nothing to learn here
+            played = options[idx]
+            theirs, _ = move_ev(game, p, played, opponents, rollouts)
+            mine, _ = move_ev(
+                game, p,
+                next((m for m in options if move_key(m) == model_key), None),
+                opponents, rollouts,
+            )
+            advantage = theirs - mine
+            if advantage < min_advantage:
+                continue
+            states.append(state)
+            acts.append(act_rows)
+            chosen.append(idx)
+            weights.append(min(max_weight, float(np.exp(advantage / beta))))
+    if not states:
+        return {"n": 0}
+    max_a = max(a.shape[0] for a in acts)
+    dim = acts[0].shape[1]
+    padded = np.zeros((len(acts), max_a, dim), dtype=np.float32)
+    mask = np.zeros((len(acts), max_a), dtype=bool)
+    for i, a in enumerate(acts):
+        padded[i, : a.shape[0]] = a
+        mask[i, : a.shape[0]] = True
+    return {
+        "n": len(states),
+        "state": np.stack(states),
+        "acts": padded,
+        "mask": mask,
+        "chosen": np.asarray(chosen, dtype=np.int64),
+        "weight": np.asarray(weights, dtype=np.float32),
+    }
+
+
 def train_awr(
     data: Dict[str, np.ndarray],
     resume: str,
