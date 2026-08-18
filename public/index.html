@@ -1097,7 +1097,15 @@ function recordGameToAccount(replay) {
 let LB = null;                      // raw /api/leaderboard payload
 let lbSort = { key: "total", dir: -1 };
 
-const stampKind = (s) => String(s).split("@")[0];
+// Stamps recorded before the WangBot rename ("ppo11@...") fold into
+// the same bucket as WangBot_v1 — one model line, one filter option.
+const KIND_CANON = { ppo11: "WangBot_v1" };
+const KIND_NICE = { ppo: "PPO v1" };
+const stampKind = (s) => {
+  const k = String(s).split("@")[0];
+  return KIND_CANON[k] || k;
+};
+const kindLabel = (k) => KIND_NICE[k] || k;
 
 function lbAggregate() {
   const filter = $("lbFilter").value || "all";
@@ -1146,7 +1154,7 @@ function renderLeaderboard() {
     <td>${Math.round(100 * a.winrate)}%</td>
     <td class="${a.total >= 0 ? "pos" : "neg"}">${sign(a.total)}</td>
     <td>${sign(a.avg.toFixed(1))}</td>
-    <td>${[...a.vs].sort().join(" · ")}</td></tr>`).join("");
+    <td>${[...a.vs].map(kindLabel).sort().join(" · ")}</td></tr>`).join("");
   box.innerHTML = `<table><tr>${head}</tr>${body}</table>`;
   for (const th of box.querySelectorAll("th[data-k]")) {
     th.addEventListener("click", () => {
@@ -1167,7 +1175,8 @@ async function loadLeaderboard() {
   }
   const cur = sel.value || "all";
   sel.innerHTML = '<option value="all">vs all models</option>' +
-    [...kinds].sort().map((k) => `<option value="${k}">vs ${k}</option>`).join("");
+    [...kinds].sort().map((k) =>
+      `<option value="${k}">vs ${kindLabel(k)}</option>`).join("");
   sel.value = [...sel.options].some((o) => o.value === cur) ? cur : "all";
   renderLeaderboard();
 }
