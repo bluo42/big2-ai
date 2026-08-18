@@ -1261,18 +1261,36 @@ async function refreshAccountStats() {
       applyAdminUI();
     }
     const sign = (x) => (x >= 0 ? "+" : "") + x;
+    // Player-facing record resets with the house lineup: only games
+    // against the current bots at their latest versions count here.
+    // The server keeps everything; per-bot records stay all-time.
+    const latest = {};
+    for (const l of stats.lineups || []) {
+      for (const s of l.lineup || []) {
+        const k = String(s).split("@")[0];
+        if (!LOCKED_LINEUP.includes(k)) continue;
+        if (!latest[k] || String(s) > latest[k]) latest[k] = String(s);
+      }
+    }
+    const cur = new Set(Object.values(latest));
+    const lineups = (stats.lineups || []).filter((l) =>
+      (l.lineup || []).length && cur.size &&
+      l.lineup.every((s) => cur.has(String(s))));
+    const games = lineups.reduce((a, l) => a + l.games, 0);
+    const wins = lineups.reduce((a, l) => a + l.wins, 0);
+    const total = lineups.reduce((a, l) => a + l.total_score, 0);
     $("authSummary").textContent =
-      `${stats.games} games · ${stats.wins} wins · total ${sign(stats.total_score)}`;
+      `${games} games · ${wins} wins · total ${sign(total)}`;
     $("persistWarn").textContent = stats.persistent ? "" :
       "demo storage: this server has no database attached, stats reset on redeploy";
-    const rows = stats.lineups.map((l) => `
+    const rows = lineups.map((l) => `
       <tr><td><span class="lineup-tag">${l.lineup.join(" · ")}</span></td>
       <td>${l.games}</td><td>${l.wins}</td>
       <td class="${l.total_score >= 0 ? "pos" : "neg"}">${sign(l.total_score)}</td>
       <td>${sign(l.avg_score)}</td></tr>`).join("");
-    $("recordRows").innerHTML = stats.lineups.length
+    $("recordRows").innerHTML = lineups.length
       ? `<table><tr><th>opponents (model versions)</th><th>games</th><th>wins</th><th>total</th><th>avg</th></tr>${rows}</table>`
-      : `<span class="acct-hint">no games recorded yet — play one!</span>`;
+      : `<span class="acct-hint">no games against the current bots yet — play one!</span>`;
   } catch (e) {
     if (String(e.message).includes("signed")) { AUTH = null; renderAuth(); }
   }
