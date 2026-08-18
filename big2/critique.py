@@ -131,26 +131,48 @@ def rollout_ev(
     n: int = 40,
     seed: int = 0,
 ) -> float:
-    """Average score for ``player`` after playing ``move``, by playing
-    the rest of the hand out ``n`` times."""
+    """Average score for ``player`` after playing ``move``.
+
+    Each rollout re-deals the hidden hands from the belief posterior
+    before playing on.  Without that the clone keeps the *real* cards
+    and, since the policies are deterministic, every rollout returns the
+    identical perfect-information result — an answer with no error bars
+    that also assumes the player could see through the table.  Sampling
+    the deal is what makes this an expectation over what the opponents
+    might actually hold.
+    """
+    from big2.inference import InferenceState
+
     rng = random.Random(seed)
-    total = 0.0
-    for _ in range(n):
+    inf = InferenceState(game, player, rng=random.Random(seed + 1))
+    worlds = inf.worlds_for_search(k=max(n, 12))
+    if not worlds:
+        worlds = [({}, 1.0)]
+    total = weight = 0.0
+    for i in range(n):
+        world, w = worlds[i % len(worlds)]
+        if w <= 0.0:
+            continue
         sim = game.clone(rng=random.Random(rng.randrange(2**31)))
+        for p, hand in world.items():
+            if p != player:
+                sim.hands[p] = sorted(hand)
         sim.step(move)
         if sim.game_over:
-            total += float(sim.scores[player])
+            total += w * float(sim.scores[player])
+            weight += w
             continue
         seats = list(opponents)
-        pol = {p: seats[i % len(seats)]
-               for i, p in enumerate(
+        pol = {p: seats[k % len(seats)]
+               for k, p in enumerate(
                    q for q in range(sim.num_players) if q != player)}
         pol[player] = seats[0]
         while not sim.game_over:
             p = sim.turn
             sim.step(pol[p].select(sim, p))
-        total += float(sim.scores[player])
-    return total / n
+        total += w * float(sim.scores[player])
+        weight += w
+    return total / weight if weight else 0.0
 
 
 def move_ev(

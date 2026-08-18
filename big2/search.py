@@ -125,9 +125,16 @@ def search_distribution(
     sampled = inf.worlds_for_search(k=worlds, top=top_worlds)
     if not sampled:
         return p_net, {}
-    evs = pimc_move_values(game, player, sampled, budget=budget)
+    evs, agreement = pimc_move_values(
+        game, player, sampled, budget=budget, with_agreement=True
+    )
     if not evs:
         return p_net, {}
+    # How much the tree gets to say is how settled the position is, not
+    # just how few cards are left: a hand where every plausible deal
+    # points at the same move is decided, and one where the deals
+    # disagree is still the network's call.
+    lam = lam * agreement
     vals = np.array(
         [evs.get(move_key(m), float("-inf")) for m in options], dtype=np.float64
     )

@@ -115,6 +115,31 @@ class TestPIMC(unittest.TestCase):
         self.assertEqual(vals[(51,)], 3.0)
         self.assertEqual(vals[(4,)], -1.0)
 
+    def test_agreement_is_total_when_every_world_says_the_same(self):
+        """The 2S is best no matter what the opponents hold, so the
+        position is settled: agreement 1.0, and search can be trusted."""
+        g = make_state([[51, 4], [5], [8], [12]])
+        worlds = [
+            ({1: [5], 2: [8], 3: [12]}, 1.0),
+            ({1: [8], 2: [12], 3: [5]}, 1.0),
+            ({1: [12], 2: [5], 3: [8]}, 1.0),
+        ]
+        vals, agree = pimc_move_values(g, 0, worlds, with_agreement=True)
+        self.assertEqual(agree, 1.0)
+        self.assertEqual(max(vals, key=vals.get), (51,))
+
+    def test_agreement_falls_when_the_deal_changes_the_answer(self):
+        """Whether the cheap card is safe depends on who holds what, so
+        the worlds disagree and the tree earns less trust."""
+        g = make_state([[4, 20], [5], [0], [1]])
+        worlds = [
+            ({1: [5], 2: [0], 3: [1]}, 1.0),   # our 4 gets beaten
+            ({1: [3], 2: [0], 3: [1]}, 1.0),   # nothing answers it
+        ]
+        _vals, agree = pimc_move_values(g, 0, worlds, with_agreement=True)
+        self.assertLessEqual(agree, 1.0)
+        self.assertGreater(agree, 0.0)
+
     def test_pimc_blends_two_worlds(self):
         g = make_state([[4, 20], [5], [8], [12]])
         worlds = [

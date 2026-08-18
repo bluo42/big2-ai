@@ -45,6 +45,7 @@ import numpy as np
 
 from big2.cards import NUM_CARDS
 from big2.game import Big2Game, ScoringConfig
+from big2.handshape import SHAPE_DIM, profile_from_worlds, shape_profile
 from big2.rules import DEFAULT_RULES
 
 BELIEF_SLOTS = 3 * NUM_CARDS
@@ -60,6 +61,26 @@ def opponent_order(game: Big2Game, player: int) -> List[int]:
     """Opponents in seat order after ``player`` — the row order used by
     every belief tensor here."""
     return [p for p in range(game.num_players) if p != player][:3]
+
+
+def shape_truth(game: Big2Game, player: int) -> np.ndarray:
+    """(3, SHAPE_DIM) what each opponent's hand actually threatens."""
+    out = np.zeros((3, SHAPE_DIM), dtype=np.float32)
+    for j, p in enumerate(opponent_order(game, player)):
+        out[j] = shape_profile(game.hands[p], game.rules)
+    return out
+
+
+def shape_prior(game: Big2Game, player: int, k: int = 60,
+                seed: int = 0) -> np.ndarray:
+    """The analytic shape estimate: sample worlds consistent with the
+    evidence and average what those hands would threaten."""
+    from big2.inference import InferenceState
+
+    inf = InferenceState(game, player, rng=random.Random(seed))
+    worlds = inf.sample_worlds(k)
+    return profile_from_worlds(worlds, opponent_order(game, player),
+                               game.rules)
 
 
 def truth_matrix(game: Big2Game, player: int) -> np.ndarray:
@@ -193,6 +214,8 @@ def collect_samples(
     rng = random.Random(seed)
     states, revs, masks, sizes, truths, priors = [], [], [], [], [], []
     evid: List[np.ndarray] = []
+    shapes: List[np.ndarray] = []
+    shape_priors: List[np.ndarray] = []
     for g in range(n_games):
         game = Big2Game(scoring=ScoringConfig(), rules=DEFAULT_RULES,
                         num_players=4, rng=random.Random(rng.randrange(2**31)))
@@ -205,6 +228,9 @@ def collect_samples(
                 frac = rng.uniform(*reveal_range)
                 rev = reveal_split(truth, frac, rng)
                 m, z = candidate_mask(game, p), hand_sizes(game, p)
+                shapes.append(shape_truth(game, p))
+                shape_priors.append(shape_prior(game, p, k=40,
+                                                seed=rng.randrange(2**31)))
                 evid.append(evidence_planes(game, p))
                 states.append(state)
                 revs.append(rev)
@@ -221,6 +247,8 @@ def collect_samples(
         "sizes": np.stack(sizes),
         "prior": np.stack(priors),
         "evidence": np.stack(evid),
+        "shape": np.stack(shapes),
+        "shape_prior": np.stack(shape_priors),
         "truth": np.stack(truths),
     }
 
@@ -325,21 +353,27 @@ def build_net(state_dim: int, hidden: int = 256):
                 nn.Linear(hidden, hidden), nn.ReLU(),
             )
             self.head = nn.Linear(hidden, BELIEF_SLOTS)
+            self.shape_head = nn.Linear(hidden, 3 * SHAPE_DIM)
             # Zero-init the head: the model *starts* as the analytic
             # baseline and can only earn its way above it.  Learning a
             # correction beats learning the whole posterior from
             # scratch, which starts far worse than uniform-by-count.
             nn.init.zeros_(self.head.weight)
             nn.init.zeros_(self.head.bias)
+            nn.init.zeros_(self.shape_head.weight)
+            nn.init.zeros_(self.shape_head.bias)
 
-        def forward(self, state, revealed, sizes, evidence):
+        def forward(self, state, revealed, sizes, evidence, shapes=False):
             x = self.trunk(
                 __import__("torch").cat(
                     [state, revealed.flatten(1), evidence.flatten(1), sizes],
                     dim=1,
                 )
             )
-            return self.head(x).view(-1, 3, NUM_CARDS)
+            cards = self.head(x).view(-1, 3, NUM_CARDS)
+            if not shapes:
+                return cards
+            return cards, self.shape_head(x).view(-1, 3, SHAPE_DIM)
 
     return BeliefNet()
 
@@ -383,6 +417,17 @@ def calibrate(net, data: Dict[str, np.ndarray], grid=None) -> float:
     return best_alpha
 
 
+def calibrate_shapes(net, data: Dict[str, np.ndarray], grid=None) -> float:
+    """Same shrinkage fit, for the hand-shape head."""
+    grid = grid if grid is not None else [0.0, 0.2, 0.35, 0.5, 0.7, 1.0]
+    best_alpha, best_loss = 0.0, float("inf")
+    for a in grid:
+        loss = evaluate_shapes(net, data, alpha=a)["learned"]["logloss"]
+        if loss < best_loss:
+            best_alpha, best_loss = a, loss
+    return best_alpha
+
+
 def predict(net, state, revealed, mask, sizes, prior, evidence,
             alpha: float = 1.0):
     """Masked, count-normalised probabilities (prior + alpha * delta)."""
@@ -421,6 +466,10 @@ def train(
     Y = torch.from_numpy(data["truth"])
     P0 = _prior_logit(torch.from_numpy(data["prior"]))
     E = torch.from_numpy(data["evidence"])
+    has_shape = "shape" in data
+    if has_shape:
+        SH = torch.from_numpy(data["shape"])
+        SP = _prior_logit(torch.from_numpy(data["shape_prior"]))
     if net is None:
         net = build_net(S.shape[1], hidden=hidden)
     opt = torch.optim.Adam(net.parameters(), lr=lr)
@@ -430,7 +479,15 @@ def train(
         tot = 0.0
         for start in range(0, n, minibatch):
             idx = perm[start : start + minibatch]
-            logits = P0[idx] + net(S[idx], R[idx], Z[idx], E[idx])
+            if has_shape:
+                card_logits, shape_delta = net(
+                    S[idx], R[idx], Z[idx], E[idx], shapes=True
+                )
+            else:
+                card_logits, shape_delta = (
+                    net(S[idx], R[idx], Z[idx], E[idx]), None
+                )
+            logits = P0[idx] + card_logits
             m = M[idx]
             bce = torch.nn.functional.binary_cross_entropy_with_logits(
                 logits, Y[idx], weight=m, reduction="sum"
@@ -439,6 +496,13 @@ def train(
             counts = probs.sum(-1)
             count_loss = ((counts - Z[idx]) ** 2).mean() / 13.0
             loss = bce + count_coef * count_loss
+            if shape_delta is not None:
+                # The hand-shape head: can they answer a pair, a flush,
+                # your top single?  Same residual trick as the card mask.
+                loss = loss + torch.nn.functional.\
+                    binary_cross_entropy_with_logits(
+                        SP[idx] + shape_delta, SH[idx]
+                    )
             opt.zero_grad()
             loss.backward()
             torch.nn.utils.clip_grad_norm_(net.parameters(), 1.0)
@@ -448,6 +512,28 @@ def train(
             print(f"[belief] epoch {ep + 1}/{epochs} loss {tot / n:.4f}",
                   flush=True)
     return net
+
+
+def evaluate_shapes(net, data: Dict[str, np.ndarray],
+                    alpha: float = 1.0) -> Dict[str, Dict[str, float]]:
+    """Shape head vs the analytic (world-sampling) shape estimate."""
+    import torch
+
+    _cards, delta = net(
+        torch.from_numpy(data["state"]),
+        torch.from_numpy(data["revealed"]),
+        torch.from_numpy(data["sizes"]),
+        torch.from_numpy(data["evidence"]),
+        shapes=True,
+    )
+    prior = torch.from_numpy(data["shape_prior"])
+    pred = torch.sigmoid(_prior_logit(prior) + alpha * delta.detach()).numpy()
+    ones = np.ones_like(data["shape"])
+    return {
+        "learned": calibration_report(pred, data["shape"], ones),
+        "analytic": calibration_report(data["shape_prior"], data["shape"],
+                                       ones),
+    }
 
 
 def evaluate(net, data: Dict[str, np.ndarray],
@@ -501,17 +587,26 @@ def main() -> None:
     calib = collect_samples(max(100, args.eval_games // 3), seed=555)
     alpha = calibrate(net, calib)
     print(f"[belief] calibrated residual weight alpha={alpha}", flush=True)
+    shape_alpha = calibrate_shapes(net, calib)
+    print(f"[belief] calibrated shape weight alpha={shape_alpha}", flush=True)
     held = collect_samples(args.eval_games, seed=999)
     report = evaluate(net, held, alpha=alpha)
+    shapes = evaluate_shapes(net, held, alpha=shape_alpha)
     print("\n=== held-out calibration (lower is better except top-k) ===")
     for name, r in report.items():
         print(f"  {name:9s} brier {r['brier']:.4f}  logloss {r['logloss']:.4f}"
               f"  ece {r['ece']:.4f}  top-k {r['topk_precision']:.1%}")
+    print("\n=== held-out hand shapes ===")
+    for name, r in shapes.items():
+        print(f"  {name:9s} brier {r['brier']:.4f}  logloss {r['logloss']:.4f}"
+              f"  ece {r['ece']:.4f}")
     torch.save({"state_dict": net.state_dict(),
                 "state_dim": net.state_dim,
                 "hidden": args.hidden,
                 "alpha": alpha,
-                "report": report}, args.out)
+                "shape_alpha": shape_alpha,
+                "report": report,
+                "shape_report": shapes}, args.out)
     print(f"[belief] saved -> {args.out}")
 
 

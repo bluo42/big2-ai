@@ -200,3 +200,35 @@ class TestTraining(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+@unittest.skipUnless(HAS_TORCH, "torch not installed")
+class TestShapeHead(unittest.TestCase):
+    def test_shape_targets_match_the_real_hands(self):
+        from big2.belief import shape_truth
+        from big2.handshape import SHAPE_DIM, shape_profile
+
+        g = Big2Game(rng=random.Random(2))
+        s = shape_truth(g, 0)
+        self.assertEqual(s.shape, (3, SHAPE_DIM))
+        for j, p in enumerate([1, 2, 3]):
+            np.testing.assert_allclose(s[j], shape_profile(g.hands[p]))
+
+    def test_shape_head_is_scored_against_the_analytic_estimate(self):
+        from big2.belief import (
+            calibrate_shapes, collect_samples, evaluate_shapes, train,
+        )
+
+        data = collect_samples(40, seed=3)
+        held = collect_samples(15, seed=8)
+        net = train(data, epochs=6, hidden=64, verbose=False)
+        alpha = calibrate_shapes(net, collect_samples(15, seed=44))
+        rep = evaluate_shapes(net, held, alpha=alpha)
+        self.assertIn("learned", rep)
+        self.assertIn("analytic", rep)
+        # alpha=0 recovers the analytic estimate, so a fitted shrinkage
+        # can never leave the head materially worse than what it corrects
+        self.assertLessEqual(rep["learned"]["logloss"],
+                             rep["analytic"]["logloss"] + 5e-3)
+        # measured at scale (260 games, alpha=0.5): brier .0333 vs .0341,
+        # logloss .1193 vs .1295

@@ -283,14 +283,25 @@ def pimc_move_values(
     player: int,
     worlds: Sequence[Tuple[Dict[int, List[Card]], float]],
     budget: int = DEFAULT_BUDGET,
-) -> Dict[MoveKey, float]:
+    with_agreement: bool = False,
+):
     """Belief-weighted average exact value of every option.
 
     Each world is a full assignment of the hidden hands; the position is
     then perfect information and ``solve`` gives the exact continuation
     value under maxn play.
+
+    With ``with_agreement`` the result also carries how *settled* the
+    position is: the weighted share of worlds whose own best move is the
+    move that wins on average.  Agreement near 1 means the unseen cards
+    no longer change the answer — the hand has become effectively
+    deterministic and the tree can be trusted.  Low agreement means the
+    right move depends on cards we cannot see, which is exactly where
+    perfect-information search deceives itself (strategy fusion) and the
+    learned policy should keep the decision.
     """
     totals: Dict[MoveKey, float] = {}
+    per_world: List[Tuple[MoveKey, float]] = []
     weight = 0.0
     for world, w in worlds:
         if w <= 0.0:
@@ -304,6 +315,13 @@ def pimc_move_values(
         weight += w
         for k, v in vals.items():
             totals[k] = totals.get(k, 0.0) + w * v
+        if vals:
+            per_world.append((max(vals, key=vals.get), w))
     if not weight:
-        return {}
-    return {k: v / weight for k, v in totals.items()}
+        return ({}, 0.0) if with_agreement else {}
+    mean = {k: v / weight for k, v in totals.items()}
+    if not with_agreement:
+        return mean
+    best = max(mean, key=mean.get) if mean else None
+    agree = sum(w for k, w in per_world if k == best) / weight
+    return mean, agree
