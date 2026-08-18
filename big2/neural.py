@@ -420,6 +420,9 @@ def confirmation_panel(
         panel.append(LinearPolicy.load("big2/policies/linear_cem.npz"))
     except Exception:
         pass
+    human = _load_snapshot_policy("big2/policies/humanlike.pt")
+    if human is not None:
+        panel.append(human)  # the strong testers' style, distilled
     panel.append(FiveCardDumper())
     panel.append(SmartHeuristic())
     try:
@@ -672,8 +675,11 @@ def train_ppo(
     #   new metric, so nothing worse ever overwrites it)
     num_players: int = 4,  # 2 runs the 1v1 curriculum: the same encoders
     #   and net, on the smaller game where credit assignment is cleanest
-    confirm_panel: bool = False,  # confirm against a mixed field (diet,
-    #   peers, past selves) instead of three copies of one reference
+    confirm_panel: bool = True,  # probe AND confirm against random draws
+    #   from the mixed field (diet, peers, past selves) instead of three
+    #   copies of one reference — a fixed-reference probe measures a
+    #   matchup, not strength.  Forced off for exploiter runs, where
+    #   points extracted from the single target is the entire metric.
     note: Optional[str] = None,  # version label stored in saved meta
     verbose: bool = True,
 ):
@@ -739,12 +745,15 @@ def train_ppo(
         return paths
 
     if probe_vs:
-        # Gate on the opponent that actually matters (e.g. the shipped v1
-        # champion): candidates are scored at a table of 3 copies of it.
+        # With the panel on, this only seeds the field with the named
+        # reference; with the panel off it is the whole (fixed) metric.
         champs = [PPOPolicy.load(probe_vs) for _ in range(3)]
     if exploit_target:
-        # The exploitability probe: how much a dedicated adversary extracts.
+        # The exploitability probe: how much a dedicated adversary
+        # extracts from ONE target — a fixed reference is the point here,
+        # so the mixed-field panel does not apply.
         champs = [PPOPolicy.load(exploit_target) for _ in range(3)]
+        confirm_panel = False
 
     panel: List[Strategy] = []
     if confirm_panel:
@@ -864,12 +873,21 @@ def train_ppo(
                 policy, probe_baselines, probe_games, ScoringConfig(),
                 DEFAULT_RULES, seed=it,
             )
-            vs_champ = (
-                _probe(policy, champs[:3], probe_games, ScoringConfig(),
-                       DEFAULT_RULES, seed=it + 1)
-                if len(champs) == 3
-                else float("nan")
-            )
+            if confirm_panel and panel:
+                # The gate metric: random 3-member draws from the mixed
+                # field per game.  A table of 3 copies of one reference
+                # measures that matchup; this measures strength.
+                vs_champ = panel_probe(
+                    policy, panel, probe_games, ScoringConfig(),
+                    DEFAULT_RULES, seed=it + 1,
+                )
+            else:
+                vs_champ = (
+                    _probe(policy, champs[:3], probe_games, ScoringConfig(),
+                           DEFAULT_RULES, seed=it + 1)
+                    if len(champs) == 3
+                    else float("nan")
+                )
             # Performance against the actual training diet (minus
             # self-play): the exact opponents it is learning to beat.
             diet = _opponent_pool()
@@ -880,6 +898,7 @@ def train_ppo(
             )
             tag = 6 if exploit_target else 5
             label = ("vs-target" if exploit_target
+                     else "vs-panel" if (confirm_panel and panel)
                      else f"vs-{os.path.basename(probe_vs).split('.')[0]}"
                      if probe_vs else "vs-champions")
             os.makedirs(os.path.dirname(progress_path), exist_ok=True)
@@ -1004,9 +1023,12 @@ def main() -> None:
                         help="explicit starting bar for the best-save gate")
     parser.add_argument("--num-players", type=int, default=4,
                         help="2 for the 1v1 curriculum, 4 for the real game")
-    parser.add_argument("--confirm-panel", action="store_true",
-                        help="confirm candidates against a mixed field of "
-                             "diet, peers and past selves")
+    parser.add_argument("--confirm-panel", action=argparse.BooleanOptionalAction,
+                        default=True,
+                        help="probe and confirm against random draws from "
+                             "the mixed field of diet, peers and past "
+                             "selves (--no-confirm-panel restores the "
+                             "fixed-reference metric)")
     parser.add_argument("--note", default=None,
                         help="version label stored in the saved meta")
     args = parser.parse_args()
