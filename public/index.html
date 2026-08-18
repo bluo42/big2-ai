@@ -422,16 +422,15 @@
 const RANKS = ["3","4","5","6","7","8","9","10","J","Q","K","A","2"];
 const SUITS = ["♦","♣","♥","♠"]; // diamonds clubs hearts spades
 const AI_KINDS = ["ppo", "ppo11", "evo", "smart", "dmc", "ismcts", "decomp", "linear", "dumper", "lowest", "highest", "random"];
-// The locked default table, tournament-tuned against the humanlike
-// (Leonidas-style) player profile: WangBot_v2 farms that style and
-// Chain D trained against it — this table held it to -0.48/game,
-// while the all-distinct trio actually LOST to it (+0.26).  Order
-// shuffles every game.  Admins keep the full kind list.
-const LOCKED_LINEUP = ["wangbot2", "chaind", "chaind"];
-const PUBLIC_KINDS = ["wangbot2", "chaind"];
+// The locked default table: three distinct chain bots, measured
+// directly against the humanlike (Leonidas-style) player profile at
+// -0.18/game over 2000 games.  Order shuffles every game.  Admins
+// keep the full kind list.
+const LOCKED_LINEUP = ["wangbot2", "khabib", "sicario"];
+const PUBLIC_KINDS = ["wangbot2", "khabib", "sicario"];
 const AI_LABEL = {
   wangbot2: "WangBot_v2", sicario: "Sicario", leonidas: "Leonidas",
-  chaind: "Chain D",
+  khabib: "Khabib",
   ppo: "PPO v1 (champion)", ppo11: "WangBot_v1 (endgame-aware)",
   evo: "Evo MLP (trained)", smart: "Smart (heuristic)",
   dmc: "DMC (trained)", ismcts: "ISMCTS (search)", decomp: "Decomposition",
@@ -503,8 +502,8 @@ function renderAiRows() {
   note.textContent = admin
     ? "Admin: any lineup and table size; games still record under each " +
       "model's version stamp."
-    : "You face the house table: WangBot_v2 and two Chain D bots — " +
-      "seats shuffled every game.";
+    : "You face the house table: WangBot_v2, Khabib, and Sicario — " +
+      "three different bots, seats shuffled every game.";
 }
 
 $("numAiSeg").addEventListener("click", (e) => {

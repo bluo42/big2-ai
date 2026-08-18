@@ -21,7 +21,7 @@ MODELS = {
     "A": "big2/policies/wangbot_v2.pt",
     "B": "big2/policies/sicario_v1.pt",
     "C": "big2/policies/leonidas_v1.pt",
-    "D": "big2/policies/chain_d.pt",
+    "D": "big2/policies/khabib_v1.pt",
 }
 REFS = {
     "ppo_v1": "big2/policies/ppo_attn.pt",
