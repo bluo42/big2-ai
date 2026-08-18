@@ -130,3 +130,81 @@ class TestInferenceState(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestMirrorState(unittest.TestCase):
+    """Lead-choice likelihoods: what would I have opened, in their shoes?"""
+
+    def _pair_lead_state(self):
+        # Seat 1 opened with a pair of 7s (16, 17).  Viewpoint 0 holds
+        # 13 known cards containing no 7; the other two 7s (18, 19) are
+        # in the unseen pool.
+        from big2.inference import MirrorState
+
+        mine = [0, 1, 4, 5, 8, 9, 12, 13, 40, 44, 48, 49, 50]
+        hands = [mine, [c for c in range(20, 31)],
+                 [c for c in range(31, 44) if c not in mine],
+                 [c for c in range(2, 16) if c not in mine][:13]]
+        # hand contents for 1-3 are placeholders: beliefs only read counts
+        hands[1] = list(range(52 - 11, 52))     # 11 cards
+        hands[2] = list(range(2, 15))           # 13
+        hands[3] = list(range(15, 28))          # 13
+        hist = [rec(1, [16, 17])]
+        g = game_with_history(hands, hist, played=(16, 17))
+        return MirrorState(g, 0, rng=random.Random(0))
+
+    def test_leading_a_pair_argues_against_holding_the_trip(self):
+        st = self._pair_lead_state()
+        filler = [20, 24, 28, 32, 36, 44, 45, 46, 47, 50]
+        with_trip = {1: sorted(filler + [18])}
+        without = {1: sorted(filler + [51])}
+        self.assertLess(st._mirror_weight(with_trip),
+                        st._mirror_weight(without))
+        self.assertGreater(st._mirror_weight(with_trip), 0.0)
+
+    def test_leading_a_single_argues_against_holding_its_pair(self):
+        from big2.inference import MirrorState
+
+        mine = [0, 1, 4, 5, 8, 9, 12, 13, 40, 44, 48, 49, 50]
+        hands = [mine, list(range(52 - 12, 52)), list(range(2, 15)),
+                 list(range(15, 28))]
+        hist = [rec(1, [24])]                    # led a lone 9D
+        g = game_with_history(hands, hist, played=(24,))
+        st = MirrorState(g, 0, rng=random.Random(0))
+        filler = [20, 28, 32, 36, 45, 46, 47, 51, 33, 34, 35]
+        with_pair = {1: sorted(filler + [25])}   # holds the 9C too
+        without = {1: sorted(filler + [21])}
+        self.assertLess(st._mirror_weight(with_pair),
+                        st._mirror_weight(without))
+
+    def test_marginals_shift_away_from_the_unled_trip_card(self):
+        from big2.inference import InferenceState, MirrorState
+
+        mine = [0, 1, 4, 5, 8, 9, 12, 13, 40, 44, 48, 49, 50]
+        hands = [mine, list(range(52 - 11, 52)), list(range(2, 15)),
+                 list(range(15, 28))]
+        hist = [rec(1, [16, 17])]
+        g = game_with_history(hands, hist, played=(16, 17))
+        plain = InferenceState(g, 0, rng=random.Random(3))
+        mirror = MirrorState(g, 0, rng=random.Random(3))
+        p_plain = plain.card_marginals(k=300)[1][18]
+        p_mirror = mirror.card_marginals(k=300)[1][18]
+        self.assertLess(p_mirror, p_plain)
+
+    def test_no_leads_no_change(self):
+        from big2.inference import InferenceState, MirrorState
+
+        g = Big2Game(rng=random.Random(5))       # untouched opening state
+        plain = InferenceState(g, 0, rng=random.Random(1))
+        mirror = MirrorState(g, 0, rng=random.Random(1))
+        w = {p: h for p, h in enumerate(g.hands) if p != 0}
+        self.assertEqual(mirror._mirror_weight(w), 1.0)
+        self.assertAlmostEqual(plain._world_weight(w),
+                               mirror._world_weight(w))
+
+    def test_one_eccentric_lead_cannot_zero_a_world(self):
+        st = self._pair_lead_state()
+        filler = [20, 24, 28, 32, 36, 44, 45, 46, 47, 50]
+        with_trip = {1: sorted(filler + [18])}
+        floor = st.mirror_floor ** st.mirror_strength
+        self.assertGreaterEqual(st._mirror_weight(with_trip), floor * 0.99)

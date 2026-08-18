@@ -285,9 +285,9 @@ class PolicyValueISMCTS:
 
     def _worlds(self, game: Big2Game, player: int, k: int):
         """Belief-weighted deals of the unseen cards, with a sampler."""
-        from big2.inference import InferenceState
+        from big2.inference import MirrorState
 
-        inf = InferenceState(game, player, rng=self.rng)
+        inf = MirrorState(game, player, rng=self.rng)
         worlds = inf.worlds_for_search(k=k)
         if not worlds:
             return [({}, 1.0)], [1.0]

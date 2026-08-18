@@ -154,7 +154,7 @@ class IntegratedAgent(Strategy):
     ) -> Optional[Decision]:
         """Exact answer when the position is small enough to verify."""
         from big2.endgame import pimc_move_values
-        from big2.inference import InferenceState
+        from big2.inference import MirrorState
         from big2.planning import PlanContext
 
         started = time.monotonic()
@@ -168,7 +168,7 @@ class IntegratedAgent(Strategy):
                                 elapsed=time.monotonic() - started)
         if left > self.solve_cards:
             return None
-        inf = InferenceState(game, player, rng=self.rng)
+        inf = MirrorState(game, player, rng=self.rng)
         worlds = inf.worlds_for_search(k=24, top=6)
         if not worlds:
             return None
