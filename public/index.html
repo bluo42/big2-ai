@@ -1124,9 +1124,11 @@ const stampKind = (s) => {
 };
 const kindLabel = (k) => KIND_NICE[k] || k;
 
-// The final slate: the shipped house bots.  The leaderboard's default
-// view shows only matches against these.
-const FINAL_SLATE = ["wangbot2", "khabib", "sicario"];
+// The final slate: the shipped house bots, as their names appear in
+// recorded lineup stamps (model_stamp uses display labels, e.g.
+// WangBot_v2@20260818-...).  The leaderboard's default view shows only
+// matches against these.
+const FINAL_SLATE = ["WangBot_v2", "Khabib", "Sicario"];
 
 // The board only counts games against the LATEST recorded version of
 // each model line — it resets on its own whenever new bots ship, and
