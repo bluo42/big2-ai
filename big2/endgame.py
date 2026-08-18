@@ -184,6 +184,15 @@ def search_clone(game: Big2Game) -> Big2Game:
 _MOVE_CACHE: Dict[Tuple, Tuple[Combo, ...]] = {}
 _MOVE_CACHE_CAP = 200_000
 
+# Cross-decision store of *exactly* solved positions — the closest thing
+# to an endgame tablebase this game admits (no precomputation: positions
+# recur constantly across PIMC worlds, search leaves, and eval games, so
+# the table builds itself).  Only memos from solves that finished within
+# budget are merged in (see solve_move_values); budget-truncated memos
+# contain static-eval guesses and stay call-local.
+_SOLVE_CACHE: Dict[Tuple, Tuple[float, ...]] = {}
+_SOLVE_CACHE_CAP = 300_000
+
 
 def cached_moves(game: Big2Game) -> Tuple[Combo, ...]:
     hand = game.hands[game.turn]
@@ -220,6 +229,8 @@ def solve(
     budget = _Budget(DEFAULT_BUDGET) if budget is None else budget
     key = _state_key(game)
     hit = memo.get(key)
+    if hit is None:
+        hit = _SOLVE_CACHE.get(key)  # exact-only entries, always safe
     if hit is not None:
         return hit
     if not budget.spend():
@@ -267,7 +278,14 @@ def solve_move_values(
         child = search_clone(game)
         child.step(m)
         out[move_key(m)] = solve(child, memo, b)[player]
-    return out, b.left >= 0
+    exact = b.left >= 0
+    if exact:
+        # Every entry in this memo is an exact value: fold it into the
+        # self-building endgame table.
+        if len(_SOLVE_CACHE) + len(memo) > _SOLVE_CACHE_CAP:
+            _SOLVE_CACHE.clear()
+        _SOLVE_CACHE.update(memo)
+    return out, exact
 
 
 # ----------------------------------------------------------------------

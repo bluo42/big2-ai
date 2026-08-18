@@ -53,7 +53,11 @@ from big2.strategies import Strategy
 # Cards left at which lines can be verified instead of estimated.
 SOLVE_CARDS = 14
 # Points per game the search must beat the policy by to override it.
-OVERRIDE_MARGIN = 0.35
+# Lowered 0.35 -> 0.10 (2026-08-18): the tree bakes the policy in as
+# its prior, so a tree move is not an anti-policy move — with a strong
+# prior the search should be allowed to decide whenever its measured
+# edge is real rather than only when it is dramatic.
+OVERRIDE_MARGIN = 0.10
 
 
 @dataclass
@@ -116,7 +120,7 @@ class IntegratedAgent(Strategy):
     def __init__(
         self,
         policy: Strategy,
-        simulations: int = 64,
+        simulations: int = 128,
         c_puct: float = 1.5,
         depth: int = 8,
         solve_cards: int = SOLVE_CARDS,
@@ -127,6 +131,7 @@ class IntegratedAgent(Strategy):
         time_budget: float = TIME_BUDGET,
         breadth: Optional[int] = None,
         top_p: Optional[float] = None,
+        trick_cutoff: Optional[bool] = None,
         name: Optional[str] = None,
     ):
         self.policy = policy
@@ -136,6 +141,8 @@ class IntegratedAgent(Strategy):
             search_kw["breadth"] = breadth
         if top_p is not None:
             search_kw["top_p"] = top_p
+        if trick_cutoff is not None:
+            search_kw["trick_cutoff"] = trick_cutoff
         self.searcher = PolicyValueISMCTS(
             policy, simulations=simulations, c_puct=c_puct, depth=depth,
             seed=seed, time_budget=time_budget, **search_kw,

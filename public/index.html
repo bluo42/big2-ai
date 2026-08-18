@@ -143,7 +143,23 @@
   }
   #status .combo-name { color: var(--accent-2); font-weight: 700; }
 
-  #handArea { background: var(--panel); border: 1px solid var(--line); border-radius: 14px; padding: 14px; }
+  #handArea { background: var(--panel); border: 1px solid var(--line); border-radius: 14px; padding: 14px;
+    display: flex; gap: 14px; align-items: flex-start; }
+  #actionCol { display: flex; flex-direction: column; gap: 8px; flex: 0 0 96px; }
+  #actionCol button { width: 96px; }
+  #handMain { flex: 1; min-width: 0; }
+  #savedBox { border: 1px solid var(--line); border-radius: 10px; padding: 8px; }
+  #savedBox .savedTitle { color: var(--muted); font-size: .7rem; letter-spacing: .08em; margin-bottom: 6px; }
+  .pkg { border: 1px solid var(--line); border-radius: 8px; padding: 5px 6px; margin-bottom: 6px;
+    cursor: pointer; font-size: .78rem; line-height: 1.25; position: relative; }
+  .pkg:hover { border-color: var(--accent, #7aa2ff); }
+  .pkg .x { position: absolute; top: 2px; right: 5px; color: var(--muted); cursor: pointer; }
+  .pkg .x:hover { color: var(--danger, #f66); }
+  .pkgRow { display: flex; align-items: center; gap: 10px; margin: 6px 0; padding: 6px 8px;
+    border: 1px dashed var(--line); border-radius: 10px; }
+  .pkgRow .lbl { min-width: 110px; font-size: .8rem; color: var(--muted); }
+  .pkgRow .cards { display: flex; }
+  .pkgRow .saveBtn { margin-left: auto; }
   #handControls { display: flex; align-items: center; gap: 8px; margin-bottom: 12px; flex-wrap: wrap; }
   #handControls .spacer { flex: 1; }
   #hand { display: flex; flex-wrap: wrap; gap: 0; padding: 6px 4px 2px; min-height: 96px; }
@@ -233,6 +249,21 @@
     #game.active { grid-template-columns: 1fr; }
     #historyPanel { max-height: 30vh; }
   }
+  @media (max-width: 640px) {
+    /* Three opponent tiles must fit a phone width: shrink instead of
+       clipping — every player's card count stays visible. */
+    #opponents { gap: 6px; }
+    .opp { min-width: 0; flex: 1 1 0; padding: 8px 6px; }
+    .opp .name { font-size: .72rem; white-space: nowrap; overflow: hidden;
+      text-overflow: ellipsis; }
+    .opp .count { font-size: 1.25rem; }
+    .opp .last { font-size: .62rem; }
+    #handArea { flex-direction: column; }
+    #actionCol { flex-direction: row; flex: initial; width: 100%; }
+    #actionCol button { flex: 1; width: auto; }
+    #savedBox { flex: 1 1 100%; }
+    .card { width: 46px; height: 66px; margin-right: -14px; }
+  }
 </style>
 </head>
 <body>
@@ -286,6 +317,8 @@
       </span>
     </h2>
     <div id="lbBox" class="acct-hint">loading…</div>
+    <h2 style="margin-top:14px">Bot records <span style="float:right;color:var(--muted);font-size:.68rem;font-weight:400">vs human players</span></h2>
+    <div id="botBox" class="acct-hint">loading…</div>
   </div>
 
   <div class="panel">
@@ -338,19 +371,28 @@
     </div>
     <div id="status"></div>
     <div id="handArea">
-      <div id="handControls">
-        <span style="color:var(--muted);font-size:.8rem">SORT</span>
-        <div class="seg" id="sortSeg">
-          <button data-s="rank" class="on">Rank</button>
-          <button data-s="suit">Suit</button>
-        </div>
-        <span class="spacer"></span>
-        <button id="hintBtn" class="hidden">Hint</button>
-        <button id="beliefsBtn" class="hidden">Beliefs</button>
-        <button id="passBtn" class="warn">Pass</button>
+      <div id="actionCol">
         <button id="playBtn" class="good">Play</button>
+        <button id="passBtn" class="warn">Pass</button>
+        <div id="savedBox" class="hidden">
+          <div class="savedTitle">SAVED</div>
+          <div id="savedList"></div>
+        </div>
       </div>
-      <div id="hand"></div>
+      <div id="handMain">
+        <div id="handControls">
+          <span style="color:var(--muted);font-size:.8rem">SORT</span>
+          <div class="seg" id="sortSeg">
+            <button data-s="rank" class="on">Rank</button>
+            <button data-s="suit">Suit</button>
+            <button data-s="hands">5-Card</button>
+          </div>
+          <span class="spacer"></span>
+          <button id="hintBtn" class="hidden">Hint</button>
+          <button id="beliefsBtn" class="hidden">Beliefs</button>
+        </div>
+        <div id="hand"></div>
+      </div>
     </div>
   </div>
 
@@ -380,8 +422,12 @@
 const RANKS = ["3","4","5","6","7","8","9","10","J","Q","K","A","2"];
 const SUITS = ["♦","♣","♥","♠"]; // diamonds clubs hearts spades
 const AI_KINDS = ["ppo", "ppo11", "evo", "smart", "dmc", "ismcts", "decomp", "linear", "dumper", "lowest", "highest", "random"];
-const PUBLIC_KINDS = ["ppo", "ppo11"];  // everyone picks between the two PPO lines
+// The locked default table: the three chain finals, one seat each,
+// order shuffled every game.  Admins keep the full kind list.
+const LOCKED_LINEUP = ["wangbot2", "sicario", "leonidas"];
+const PUBLIC_KINDS = ["wangbot2", "sicario", "leonidas"];
 const AI_LABEL = {
+  wangbot2: "WangBot_v2", sicario: "Sicario", leonidas: "Leonidas",
   ppo: "PPO v1 (champion)", ppo11: "WangBot_v1 (endgame-aware)",
   evo: "Evo MLP (trained)", smart: "Smart (heuristic)",
   dmc: "DMC (trained)", ismcts: "ISMCTS (search)", decomp: "Decomposition",
@@ -453,9 +499,8 @@ function renderAiRows() {
   note.textContent = admin
     ? "Admin: any lineup and table size; games still record under each " +
       "model's version stamp."
-    : "Your pick plays every AI seat. WangBot_v1 (default) is trained " +
-      "with endgame awareness of opponents' card counts; PPO v1 is the " +
-      "previous champion.";
+    : "You face the house table: WangBot_v2, Sicario, and Leonidas — " +
+      "three different bots, seats shuffled every game.";
 }
 
 $("numAiSeg").addEventListener("click", (e) => {
@@ -469,11 +514,14 @@ $("numAiSeg").addEventListener("click", (e) => {
 function currentSettings() {
   // House rules are fixed for players; admins can deal rule variants.
   const sels = [...$("aiRows").querySelectorAll("select")];
+  // Players face the locked lineup — the three chain finals, order
+  // shuffled every game; a 1-2 AI table draws a random subset.
+  const shuffled = [...LOCKED_LINEUP].sort(() => Math.random() - 0.5);
   const s = {
     num_ai: numAi,
     ai: isAdmin()
       ? sels.map((sel) => sel.value)
-      : Array(numAi).fill(sels[0].value),  // one model, every seat
+      : shuffled.slice(0, numAi),
   };
   if (isAdmin()) {
     s.rules = {
@@ -599,22 +647,165 @@ function sortedHand() {
   return hand;
 }
 
+/* ---------------- 5-card packages (client-side detection) ---------- */
+const rankOfC = (c) => Math.floor(c / 4);
+
+function detectPackages(hand) {
+  // Curated, low-overlap candidates: SF and straights by top rank,
+  // one flush per suit (top card + cheapest support), one full house
+  // per triple rank, quads with the cheapest kicker.  Straights use
+  // ranks 3..A (no 2s), matching the house reading.
+  const pkgs = [];
+  const byRank = Array.from({ length: 13 }, () => []);
+  const bySuit = [[], [], [], []];
+  for (const c of [...hand].sort((a, b) => a - b)) {
+    byRank[rankOfC(c)].push(c);
+    bySuit[suitOf(c)].push(c);
+  }
+  const runPick = (r0, pool) => {
+    const pick = [];
+    for (let r = r0; r < r0 + 5; r++) {
+      const cs = pool(r);
+      if (!cs.length) return null;
+      pick.push(cs[0]);
+    }
+    return pick;
+  };
+  for (let s = 0; s < 4; s++) {           // straight flushes
+    for (let r0 = 0; r0 <= 7; r0++) {
+      const pick = runPick(r0, (r) => byRank[r].filter((c) => suitOf(c) === s));
+      if (pick) pkgs.push({ label: `Str.Flush ${RANKS[r0 + 4]}${SUITS[s]}`, cards: pick });
+    }
+  }
+  for (const [r, cs] of byRank.entries()) { // quads
+    if (cs.length === 4) {
+      const kicker = hand.filter((c) => rankOfC(c) !== r).sort((a, b) => a - b)[0];
+      if (kicker !== undefined)
+        pkgs.push({ label: `Quads ${RANKS[r]}`, cards: [...cs, kicker] });
+    }
+  }
+  for (const [r, cs] of byRank.entries()) { // full houses
+    if (cs.length >= 3) {
+      const pr = byRank.findIndex((p, i) => i !== r && p.length >= 2);
+      if (pr >= 0)
+        pkgs.push({ label: `Full House ${RANKS[r]}`,
+                    cards: [...cs.slice(0, 3), ...byRank[pr].slice(0, 2)] });
+    }
+  }
+  for (let s = 0; s < 4; s++) {           // flushes
+    if (bySuit[s].length >= 5) {
+      const cs = bySuit[s];
+      const cards = [...cs.slice(0, 4), cs[cs.length - 1]];
+      pkgs.push({ label: `Flush ${RANKS[rankOfC(cs[cs.length - 1])]}${SUITS[s]}`,
+                  cards });
+    }
+  }
+  for (let r0 = 0; r0 <= 7; r0++) {       // straights
+    const pick = runPick(r0, (r) => byRank[r]);
+    if (pick) pkgs.push({ label: `Straight ${RANKS[r0 + 4]}`, cards: pick });
+  }
+  const seen = new Set();
+  return pkgs.filter((p) => {
+    const k = p.cards.join(",");
+    if (seen.has(k)) return false;
+    seen.add(k);
+    return true;
+  });
+}
+
+let savedPackages = [];
+
+function renderSaved() {
+  const box = $("savedBox"), list = $("savedList");
+  savedPackages = savedPackages.filter((p) =>
+    p.cards.every((c) => S && S.hand.includes(c)));
+  box.classList.toggle("hidden", savedPackages.length === 0);
+  list.innerHTML = "";
+  savedPackages.forEach((p, i) => {
+    const d = document.createElement("div");
+    d.className = "pkg";
+    d.innerHTML = `<span class="x" title="unsave">×</span><b>${p.label}</b><br>` +
+      p.cards.map((c) => `${RANKS[rankOfC(c)]}${SUITS[suitOf(c)]}`).join(" ");
+    d.querySelector(".x").addEventListener("click", (e) => {
+      e.stopPropagation();
+      savedPackages.splice(i, 1);
+      renderSaved();
+      if (sortMode === "hands") renderHand();
+    });
+    d.addEventListener("click", () => {
+      if (busy || !S || S.phase !== "playing" || S.turn !== S.human_seat) return;
+      selected.clear();
+      p.cards.forEach((c) => selected.add(c));
+      renderHand();
+      updateControls();
+    });
+    list.appendChild(d);
+  });
+}
+
+function clickableCard(c) {
+  const d = cardEl(c);
+  d.dataset.card = c;
+  if (selected.has(c)) d.classList.add("sel");
+  d.addEventListener("click", () => {
+    if (busy || S.phase !== "playing" || S.turn !== S.human_seat) return;
+    d.classList.remove("hinted");
+    if (selected.has(c)) { selected.delete(c); d.classList.remove("sel"); }
+    else { selected.add(c); d.classList.add("sel"); }
+    updateControls();
+  });
+  return d;
+}
+
 function renderHand() {
   const el = $("hand");
   el.innerHTML = "";
-  for (const c of sortedHand()) {
-    const d = cardEl(c);
-    d.dataset.card = c;
-    if (selected.has(c)) d.classList.add("sel");
-    d.addEventListener("click", () => {
-      if (busy || S.phase !== "playing" || S.turn !== S.human_seat) return;
-      d.classList.remove("hinted");
-      if (selected.has(c)) { selected.delete(c); d.classList.remove("sel"); }
-      else { selected.add(c); d.classList.add("sel"); }
-      updateControls();
-    });
-    el.appendChild(d);
+  renderSaved();
+  if (sortMode === "hands") {
+    const savedKeys = new Set(savedPackages.map((p) => p.cards.join(",")));
+    const pkgs = detectPackages(S.hand)
+      .filter((p) => !savedKeys.has(p.cards.join(",")));
+    if (!pkgs.length && !savedPackages.length) {
+      const n = document.createElement("div");
+      n.style.cssText = "color:var(--muted);font-size:.85rem;padding:8px";
+      n.textContent = "no 5-card hands available";
+      el.appendChild(n);
+    }
+    for (const p of pkgs) {
+      const row = document.createElement("div");
+      row.className = "pkgRow";
+      const lbl = document.createElement("div");
+      lbl.className = "lbl";
+      lbl.textContent = p.label;
+      row.appendChild(lbl);
+      const cc = document.createElement("div");
+      cc.className = "cards";
+      for (const c of p.cards) cc.appendChild(clickableCard(c));
+      row.appendChild(cc);
+      const sv = document.createElement("button");
+      sv.className = "saveBtn";
+      sv.textContent = "Save";
+      sv.addEventListener("click", () => {
+        savedPackages.push(p);
+        renderSaved();
+        renderHand();
+      });
+      row.appendChild(sv);
+      el.appendChild(row);
+    }
+    const inPkg = new Set(pkgs.flatMap((p) => p.cards));
+    const rest = document.createElement("div");
+    rest.style.cssText = "display:flex;flex-wrap:wrap;margin-top:6px";
+    for (const c of sortedHandByRank().filter((c) => !inPkg.has(c)))
+      rest.appendChild(clickableCard(c));
+    el.appendChild(rest);
+    return;
   }
+  for (const c of sortedHand()) el.appendChild(clickableCard(c));
+}
+
+function sortedHandByRank() {
+  return [...S.hand].sort((a, b) => a - b);
 }
 
 function renderOpponents(view) {
@@ -796,9 +987,9 @@ function updateControls() {
   const myTurn = S.phase === "playing" && S.turn === S.human_seat && !busy;
   const match = selectionCombo();
   $("playBtn").disabled = !myTurn || !match;
-  $("playBtn").textContent = match
-    ? "Play " + (TYPE_LABEL[match.type] || match.type)
-    : "Play";
+  // Label stays a constant "Play": a changing caption resizes the
+  // button and makes the action column jump around.
+  $("playBtn").title = match ? (TYPE_LABEL[match.type] || match.type) : "";
   $("passBtn").disabled = !myTurn || !S.can_pass;
 
   if (!myTurn) return;
@@ -1107,10 +1298,26 @@ const stampKind = (s) => {
 };
 const kindLabel = (k) => KIND_NICE[k] || k;
 
+// The board only counts games against the LATEST version of each
+// model line — a reset happens naturally whenever new bots ship, and
+// records earned against retired versions stop mixing into the totals.
+function latestStamps() {
+  const latest = {};
+  for (const r of (LB && LB.rows) || []) {
+    for (const s of r.lineup || []) {
+      const k = stampKind(s);
+      if (!latest[k] || String(s) > String(latest[k])) latest[k] = String(s);
+    }
+  }
+  return new Set(Object.values(latest));
+}
+
 function lbAggregate() {
   const filter = $("lbFilter").value || "all";
+  const current = latestStamps();
   const by = {};
   for (const r of (LB && LB.rows) || []) {
+    if (!(r.lineup || []).every((s) => current.has(String(s)))) continue;
     const kinds = [...new Set((r.lineup || []).map(stampKind))];
     if (filter !== "all" && !kinds.includes(filter)) continue;
     const a = by[r.username] || (by[r.username] = {
@@ -1130,8 +1337,8 @@ function renderLeaderboard() {
   const rows = lbAggregate();
   if (!rows.length) {
     box.textContent = $("lbFilter").value === "all" || !$("lbFilter").value
-      ? "no recorded games yet — sign in and be first on the board"
-      : "no recorded games against this model yet";
+      ? "no games against the current bots yet — the board resets with each new version"
+      : "no recorded games against this model version yet";
     return;
   }
   for (const a of rows) {
@@ -1182,6 +1389,32 @@ async function loadLeaderboard() {
 }
 $("lbBtn").addEventListener("click", loadLeaderboard);
 $("lbFilter").addEventListener("change", renderLeaderboard);
+
+/* Bot records: each model's own running tally against the humans. */
+async function loadBotRecords() {
+  const box = $("botBox");
+  let data = null;
+  try { data = await apiAuth("/api/bot_records", {}); } catch {}
+  if (!data || !data.bots || !data.bots.length) {
+    box.textContent = "no recorded games yet";
+    return;
+  }
+  const rows = data.bots.map((b) => {
+    const kind = stampKind(b.stamp);
+    const winPct = b.games ? Math.round(100 * b.wins / b.games) : 0;
+    return `<tr><td>${kindLabel(kind)}</td>` +
+      `<td style="color:var(--muted);font-size:.7rem">${String(b.stamp).split("@")[1] || ""}</td>` +
+      `<td style="text-align:right">${b.games}</td>` +
+      `<td style="text-align:right">${winPct}%</td>` +
+      `<td style="text-align:right">${b.avg_score >= 0 ? "+" : ""}${b.avg_score.toFixed(2)}</td></tr>`;
+  }).join("");
+  box.innerHTML = `<table style="width:100%;font-size:.78rem;border-spacing:0">` +
+    `<tr style="color:var(--muted);font-size:.68rem"><th style="text-align:left">model</th>` +
+    `<th style="text-align:left">version</th><th style="text-align:right">games</th>` +
+    `<th style="text-align:right">win%</th><th style="text-align:right">avg pts</th></tr>${rows}</table>`;
+}
+$("lbBtn").addEventListener("click", loadBotRecords);
+loadBotRecords();
 
 renderAuth();
 refreshAccountStats();

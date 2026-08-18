@@ -265,6 +265,52 @@ class Store:
             ],
         }
 
+    def bot_records(self) -> Dict:
+        """Per-bot running record against human players.
+
+        Walks the recorded replays (each carries per-seat stamps and
+        final scores) and aggregates every AI seat by its model stamp:
+        games, total score, wins.  The human seat is excluded; scale is
+        hundreds of games, so the per-request scan is fine.
+        """
+        agg: Dict[str, Dict[str, float]] = {}
+        with self._connect() as con:
+            cur = con.cursor()
+            cur.execute("SELECT user_seat, replay FROM games")
+            for user_seat, replay in cur.fetchall():
+                try:
+                    body = (json.loads(replay)
+                            if isinstance(replay, str) else replay)
+                    stamps = body.get("stamps") or []
+                    scores = body.get("scores") or {}
+                    winner = body.get("winner")
+                except Exception:
+                    continue
+                for seat, stamp in enumerate(stamps):
+                    if seat == user_seat or not stamp or stamp == "you":
+                        continue
+                    rec = agg.setdefault(
+                        str(stamp), {"games": 0, "score": 0.0, "wins": 0}
+                    )
+                    rec["games"] += 1
+                    rec["score"] += float(scores.get(str(seat), 0) or 0)
+                    if winner == seat:
+                        rec["wins"] += 1
+        return {
+            "bots": [
+                {
+                    "stamp": stamp,
+                    "games": int(r["games"]),
+                    "wins": int(r["wins"]),
+                    "total_score": r["score"],
+                    "avg_score": r["score"] / max(1, r["games"]),
+                }
+                for stamp, r in sorted(
+                    agg.items(), key=lambda kv: -kv[1]["games"]
+                )
+            ]
+        }
+
     def leaderboard(self) -> Dict:
         """Structured testers leaderboard: per-user record + aggregate."""
         with self._connect() as con:

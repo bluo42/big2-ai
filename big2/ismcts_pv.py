@@ -154,6 +154,7 @@ class PolicyValueISMCTS:
         breadth: int = BREADTH,
         top_p: float = TOP_P,
         rollout_temp: float = 0.8,
+        trick_cutoff: bool = True,
     ):
         self.policy = policy
         self.simulations = simulations
@@ -165,6 +166,7 @@ class PolicyValueISMCTS:
         self.breadth = int(breadth)
         self.top_p = float(top_p)
         self.rollout_temp = float(rollout_temp)
+        self.trick_cutoff = bool(trick_cutoff)
 
     # ------------------------------------------------------------------
     # Policy access
@@ -266,10 +268,21 @@ class PolicyValueISMCTS:
         has never seen (an off-turn player has no legal moves, so the
         action set collapses to a bare pass).  Stopping on our turn keeps
         every leaf on-distribution.
+
+        It also stops early — depth notwithstanding — the moment the
+        trick resolves and the *player* holds the fresh-trick lead: the
+        new-trick decision is the highest-leverage state there is, so
+        the playout prices it rather than guessing through it.  (A
+        fresh trick led by an opponent keeps playing until the decision
+        returns to the player, which keeps the leaf on-distribution.)
         """
         steps = 0
         while not world.game_over and steps < MAX_ROLLOUT_STEPS:
             if remaining_cards(world) <= self.solve_below:
+                return
+            if self.trick_cutoff and steps > 0 \
+                    and world.table_combo is None \
+                    and world.turn == player:
                 return
             if steps >= plies and world.turn == player:
                 return

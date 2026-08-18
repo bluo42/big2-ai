@@ -50,6 +50,115 @@ FEAT_DIM = BASE_DIM + EXTRA_DIM_V4  # current version (v4)
 EXACT_DECOMP_MAX = 8
 MINI_MC_WORLDS = 16
 
+# Beat-risk block (2026-08-18): per candidate move, the probability the
+# opponents can answer it, from uniform deals of the unseen pool —
+# deterministic exclusion + combinatorics only, no play-evidence
+# inference.  This is the flush-vs-straight decision made visible: play
+# the five-card hand the unseen mass is least able to beat.
+BEAT_DIM = 4
+BEAT_MC_WORLDS = 24
+
+
+def _hand_strength_summary(cards) -> Tuple[int, int, int, int]:
+    """(best single, best pair key, five-card category, five-card key)
+    of one hand; -1 where the class cannot be made.  Categories are
+    ordered straight(0) < flush(1) < full house(2) < quads(3) <
+    straight flush(4); keys compare within a category.  Straights are
+    approximated as 5 consecutive ranks 3..A — close enough for a
+    probability feature, exactness stays the solver's job."""
+    if not cards:
+        return -1, -1, -1, -1
+    best_single = max(cards)
+    counts = [0] * NUM_RANKS
+    suit_ranks: List[List[int]] = [[], [], [], []]
+    for c in cards:
+        counts[rank(c)] += 1
+        suit_ranks[suit(c)].append(rank(c))
+    best_pair = -1
+    for r in range(NUM_RANKS):
+        if counts[r] >= 2:
+            top_suit = max(suit(c) for c in cards if rank(c) == r)
+            best_pair = r * 4 + top_suit
+    fives: List[Tuple[int, int]] = []
+    for s in range(4):
+        if len(suit_ranks[s]) >= 5:
+            fives.append((1, max(suit_ranks[s])))
+        rs = set(suit_ranks[s])
+        run = 0
+        for r in range(12):
+            run = run + 1 if r in rs else 0
+            if run >= 5:
+                fives.append((4, r))
+    run = 0
+    for r in range(12):
+        run = run + 1 if counts[r] else 0
+        if run >= 5:
+            fives.append((0, r))
+    trips = [r for r in range(NUM_RANKS) if counts[r] >= 3]
+    if trips and any(counts[r] >= 2 and r != trips[-1]
+                     for r in range(NUM_RANKS)):
+        fives.append((2, trips[-1]))
+    quads = [r for r in range(NUM_RANKS) if counts[r] == 4]
+    if quads and len(cards) >= 5:
+        fives.append((3, quads[-1]))
+    five_cat, five_key = max(fives, default=(-1, -1))
+    return best_single, best_pair, five_cat, five_key
+
+
+def beat_features(ctx: "DecisionContext",
+                  move: Optional[Combo]) -> np.ndarray:
+    """[P(next opponent beats this move), P(any opponent beats it),
+    E[# beaters]/3, P(any opponent can follow in class)] over the
+    uniform worlds cached on the context.  Zeros for a pass and for
+    combo sizes the summary does not model."""
+    out = np.zeros(BEAT_DIM, dtype=np.float32)
+    if move is None:
+        return out
+    n = len(move)
+    if n == 1:
+        cls, key = 0, move.cards[0]
+    elif n == 2:
+        cls = 1
+        key = rank(move.cards[0]) * 4 + max(suit(c) for c in move.cards)
+    elif n == 5:
+        s = _hand_strength_summary(list(move.cards))
+        cls, key = 2, (s[2], s[3])
+    else:
+        return out
+    others, worlds = ctx.beat_worlds()
+    if not worlds:
+        return out
+    game = ctx.game
+    nxt = (ctx.player + 1) % game.num_players
+    while nxt not in others:
+        nxt = (nxt + 1) % game.num_players
+    ni = others.index(nxt)
+    beats_next = beats_any = beaters = has_class = 0
+    for per_opp in worlds:
+        cnt = 0
+        any_h = False
+        for j, (bs, bp, fc, fk) in enumerate(per_opp):
+            if cls == 0:
+                b, h = bs > key, bs >= 0
+            elif cls == 1:
+                b, h = bp > key, bp >= 0
+            else:
+                b, h = (fc, fk) > key, fc >= 0
+            if b:
+                cnt += 1
+                if j == ni:
+                    beats_next += 1
+            any_h = any_h or h
+        beats_any += 1 if cnt else 0
+        beaters += cnt
+        has_class += 1 if any_h else 0
+    k = float(len(worlds))
+    out[0] = beats_next / k
+    out[1] = beats_any / k
+    out[2] = beaters / (3.0 * k)
+    out[3] = has_class / k
+    return out
+
 
 class DecisionContext:
     """Per-decision cache shared by every candidate move's encoding."""
@@ -164,6 +273,34 @@ class DecisionContext:
                 dtype=np.float32,
             ),
         ])
+
+    def beat_worlds(self):
+        """Uniform deals of the unseen pool, summarized per opponent —
+        computed once per decision, only when the beat-risk block is
+        requested."""
+        cached = getattr(self, "_beat_worlds", None)
+        if cached is not None:
+            return cached
+        game, player = self.game, self.player
+        others = [p for p in range(game.num_players) if p != player][:3]
+        worlds = []
+        pool = self.belief.unseen
+        if pool:
+            rng = random.Random(len(game.played_cards) * 613 + player + 7)
+            for _ in range(BEAT_MC_WORLDS):
+                sample = pool[:]
+                rng.shuffle(sample)
+                i = 0
+                per_opp = []
+                for p in others:
+                    cnt = len(game.hands[p])
+                    per_opp.append(
+                        _hand_strength_summary(sample[i : i + cnt])
+                    )
+                    i += cnt
+                worlds.append(per_opp)
+        self._beat_worlds = (others, worlds)
+        return self._beat_worlds
 
     def move_extras_v4(self, move: Optional[Combo]) -> np.ndarray:
         """Move-dependent v4 features: decomposition delta + payment tier."""

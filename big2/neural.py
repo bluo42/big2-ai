@@ -37,13 +37,16 @@ import os
 import pickle
 import random
 import time
+from collections import deque
 from typing import Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
 
 from big2.cards import NUM_CARDS
 from big2.combos import Combo
-from big2.features import FEAT_DIM, DecisionContext, encode_sa
+from big2.features import (
+    BEAT_DIM, FEAT_DIM, DecisionContext, beat_features, encode_sa,
+)
 from big2.game import Big2Game, ScoringConfig
 from big2.inference import OVERPLAY_DIM, overplay_features
 from big2.planning import (
@@ -60,6 +63,17 @@ from big2.rules import DEFAULT_RULES
 from big2.strategies import FiveCardDumper, SmartHeuristic, Strategy
 
 SCORE_SCALE = 39.0
+# Total cards left below which the learner's rollout seats consult the
+# IS-MCTS agent (with the exact solver inside it taking over <= 14).
+# 4p searches from 26 down — the band that trained stably for hours.
+# Deeper bands were tried 2026-08-18 (40, then 35): the deviation
+# analysis put the human edge early in the hand, but searching there
+# doubled the wall clock and the first probes after the change went
+# sharply negative (raw-policy drift under a search-dominated executed
+# distribution is the suspected mechanism).  2p/3p are retired from
+# training entirely.
+SEARCH_CARDS_4P = 26
+SEARCH_CARDS_23P = 18
 # v1.1: sharp endgame-danger block appended to every action encoding.
 # Counts existed as soft /13 scalars before; these are the thresholded
 # versions plus the interactions that matter ("the next actor is nearly
@@ -76,6 +90,8 @@ PROFILE_SLOTS = 3 * PROFILE_DIM  # cross-game opponent profiles, same order
 OVERPLAY_SLOTS = 3 * OVERPLAY_DIM
 STATE_DIM_V11 = FEAT_DIM + PROFILE_SLOTS
 STATE_DIM = STATE_DIM_V11 + PLAN_STATE_DIM + OVERPLAY_SLOTS
+# Beat-risk block appended after the plan block (see big2/features.py).
+ACT_DIM_BEAT = ACT_DIM + BEAT_DIM
 
 
 def danger_features(game: Big2Game, player: int,
@@ -146,6 +162,7 @@ def encode_decision(
     include_profiles: bool = True,
     include_danger: bool = True,
     include_plan: bool = True,
+    include_beat: bool = False,
 ) -> Tuple[List[Optional[Combo]], np.ndarray, np.ndarray]:
     """(options, state_vec, action_matrix) for one decision.
 
@@ -200,6 +217,8 @@ def encode_decision(
             parts.append(danger_features(game, player, m))
         if pctx is not None:
             parts.append(plan_features(pctx, m))
+        if include_beat:
+            parts.append(beat_features(ctx, m))
         rows.append(np.concatenate(parts).astype(np.float32))
     return options, state, np.stack(rows)
 
@@ -220,11 +239,19 @@ def belief_target(game: Big2Game, player: int) -> np.ndarray:
 
 
 def build_net(d_model: int = 192, heads: int = 4, state_dim: int = STATE_DIM,
-              act_dim: int = ACT_DIM, layers: int = 2):
+              act_dim: int = ACT_DIM, layers: int = 2, attn_blocks: int = 1):
     """``layers`` counts Linear layers in each input MLP (2 = the
     original shape every shipped checkpoint has; 3 adds one d->d block
     to both towers).  Depth and width (``d_model``) are the two axes of
-    the capacity experiments."""
+    the capacity experiments.
+
+    ``attn_blocks`` is the move-interaction depth: with 2, a second
+    residual attention block lets move-vs-move comparisons compose
+    (raise-over-this-then-keep-control patterns).  Its output projection
+    is zero-initialized, so a 1-block checkpoint warm-starts into a
+    2-block net functionally unchanged and gradients open the new block
+    up from there.  Loaders detect the block from the state_dict itself
+    (``attn2.*`` keys), never from metadata."""
     import torch
     import torch.nn as nn
 
@@ -244,10 +271,18 @@ def build_net(d_model: int = 192, heads: int = 4, state_dim: int = STATE_DIM,
             self.state_dim = state_dim
             self.act_dim = act_dim
             self.layers = layers
+            self.attn_blocks = attn_blocks
             self.state_mlp = _tower(state_dim, final_relu=True)
             self.act_mlp = _tower(act_dim, final_relu=False)
             self.attn = nn.MultiheadAttention(d_model, heads, batch_first=True)
             self.norm = nn.LayerNorm(d_model)
+            if attn_blocks >= 2:
+                self.attn2 = nn.MultiheadAttention(
+                    d_model, heads, batch_first=True
+                )
+                self.norm2 = nn.LayerNorm(d_model)
+                nn.init.zeros_(self.attn2.out_proj.weight)
+                nn.init.zeros_(self.attn2.out_proj.bias)
             self.policy_head = nn.Linear(d_model, 1)
             self.value_head = nn.Sequential(
                 nn.Linear(2 * d_model, d_model), nn.ReLU(),
@@ -263,6 +298,16 @@ def build_net(d_model: int = 192, heads: int = 4, state_dim: int = STATE_DIM,
                 h, h, h, key_padding_mask=~mask, need_weights=False
             )
             h = self.norm(h + attn_out)
+            if self.attn_blocks >= 2:
+                # Pre-norm residual: with the zero-initialized output
+                # projection this is exactly h at warm-start, so a
+                # 1-block checkpoint resumes bit-identical.
+                n2h = self.norm2(h)
+                a2, _ = self.attn2(
+                    n2h, n2h, n2h, key_padding_mask=~mask,
+                    need_weights=False,
+                )
+                h = h + a2
             logits = self.policy_head(h).squeeze(-1)      # (B,A)
             logits = logits.masked_fill(~mask, -1e9)
             pooled = (h * mask.unsqueeze(-1)).sum(1) / (
@@ -295,6 +340,7 @@ class PPOPolicy(Strategy):
         self.uses_profiles = sdim != FEAT_DIM
         self.uses_danger = adim >= ACT_DIM_V11
         self.uses_plan = adim >= ACT_DIM and sdim >= STATE_DIM
+        self.uses_beat = adim >= ACT_DIM_BEAT
         self.book: Optional[OpponentProfileBook] = None
         self.seat_keys: Optional[Dict[int, object]] = None
 
@@ -308,6 +354,7 @@ class PPOPolicy(Strategy):
             include_profiles=self.uses_profiles,
             include_danger=self.uses_danger,
             include_plan=self.uses_plan,
+            include_beat=self.uses_beat,
         )
         with torch.no_grad():
             logits, _, _ = self.net(
@@ -338,9 +385,11 @@ class PPOPolicy(Strategy):
         # depends on its metadata being complete.
         depth = sum(1 for k in sd
                     if k.startswith("state_mlp.") and k.endswith(".weight"))
+        blocks = 2 if any(k.startswith("attn2.") for k in sd) else 1
         net = build_net(
             payload.get("d_model", 192), payload.get("heads", 4),
             state_dim=in_dim, act_dim=a_dim, layers=depth,
+            attn_blocks=blocks,
         )
         net.load_state_dict(payload["state_dict"])
         return cls(net)
@@ -438,6 +487,65 @@ def confirmation_panel(
         if p is not None:
             panel.append(p)
     return panel
+
+
+CONFIRM_FILES = ("big2/policies/ppo_attn_v11.pt",
+                 "big2/policies/ppo_attn.pt",
+                 "big2/policies/humanlike.pt")
+
+
+def confirm_pool(files: Optional[Sequence[str]] = None) -> List[Strategy]:
+    """The stationary confirmation room (default: WangBot_v1, PPO v1,
+    humanlike).  Seats are drawn from this with replacement by
+    replacement_probe.  Later chains pass their own room — e.g. chain C
+    confirms against the A/B finals."""
+    return [p for p in (_load_snapshot_policy(f)
+                        for f in (files or CONFIRM_FILES))
+            if p is not None]
+
+
+def replacement_probe(policy: Strategy, members: Sequence[Strategy],
+                      n_games: int, scoring, rules, seed: int) -> float:
+    """Mean score over 4p games whose three opponent seats are drawn
+    from ``members`` independently, with replacement, per game — so
+    tables of 3x one model, 2+1, and 1+1+1 all occur."""
+    rng = random.Random(seed)
+    total = 0.0
+    for g in range(n_games):
+        seat = g % 4
+        draws = [rng.choice(list(members)) for _ in range(3)]
+        seats = [policy if p == seat else draws.pop() for p in range(4)]
+        game = Big2Game(
+            scoring=scoring, rules=rules, num_players=4,
+            rng=random.Random(rng.randrange(2**31)),
+        )
+        total += game.play_out(seats)[seat]
+    return total / n_games
+
+
+class SearchAssist(Strategy):
+    """The learner in its deployed shape: raw policy while the table is
+    wide, IS-MCTS below SEARCH_CARDS_4P with the rollout configuration
+    (64 sims, depth 10, 100ms), exact solver inside the agent.  Used by the
+    confirmation so the gate, the confirmation, and deployment all
+    measure the same player; opponents stay raw policies."""
+
+    def __init__(self, policy: Strategy, seed: int = 0):
+        from big2.agent import IntegratedAgent
+
+        self.policy = policy
+        self.agent = IntegratedAgent(
+            policy, simulations=64, depth=10, breadth=6, top_p=0.9,
+            time_budget=0.10, seed=seed,
+        )
+        self.name = f"assist({getattr(policy, 'name', 'policy')})"
+
+    def select(self, game, player):
+        from big2.endgame import remaining_cards
+
+        if game.num_players == 4 and remaining_cards(game) < SEARCH_CARDS_4P:
+            return self.agent.select(game, player)
+        return self.policy.select(game, player)
 
 
 def diet_confirm(
@@ -545,6 +653,30 @@ _SNAP_CACHE: Dict[Tuple[str, float], "PPOPolicy"] = {}
 # for the occasional random seat that keeps the diet from going stale.
 _WIDE_POOL: Optional[List[Strategy]] = None
 
+# Worker-side weighted collection: the whole pool with the preferred
+# models (default: shipped champions + humanlike) at double weight —
+# stay good against everything, preferentially pressure-test against
+# the models to beat.  Cached as (preferred-key, pool).
+_WEIGHTED_POOL: Optional[Tuple[Tuple[str, ...], List[Strategy]]] = None
+
+
+_PREFERRED_DEFAULT = ("big2/policies/ppo_attn_v11.pt",
+                      "big2/policies/ppo_attn.pt",
+                      "big2/policies/humanlike.pt")
+
+
+def _weighted_collection(
+    preferred: Sequence[str] = _PREFERRED_DEFAULT,
+) -> List[Strategy]:
+    global _WEIGHTED_POOL
+    key = tuple(preferred)
+    if _WEIGHTED_POOL is None or _WEIGHTED_POOL[0] != key:
+        coll = list(_wide_collection())
+        boost = [p for p in (_load_snapshot_policy(f) for f in key)
+                 if p is not None]
+        _WEIGHTED_POOL = (key, coll + boost)
+    return _WEIGHTED_POOL[1]
+
 
 def _wide_collection() -> List[Strategy]:
     """The whole zoo, loaded lazily and defensively.
@@ -612,16 +744,47 @@ def _load_snapshot_policy(path: str) -> Optional["PPOPolicy"]:
 def rollout_games(args) -> bytes:
     """Worker: play games with the given weights, return episode batch."""
     (state_bytes, n_games, seed, selfplay_prob, snapshot_paths,
-     past_self_prob, exploit_path, num_players, wildcard_prob) = args
+     past_self_prob, exploit_path, num_players, wildcard_prob,
+     hard_pool, champ_prob, random_draw, search_rollouts,
+     use_profiles, search_depth, champ_files, fixed_files,
+     fixed_prob) = args
+    preferred = tuple(champ_files) if champ_files else _PREFERRED_DEFAULT
+    fixed_seats: List[Strategy] = []
+    if fixed_files:
+        # The final-boss table: with probability fixed_prob a game seats
+        # exactly these models (shuffled) as the three opponents.
+        fixed_seats = [p for p in (_load_snapshot_policy(f)
+                                   for f in fixed_files) if p is not None]
     import torch
 
     torch.set_num_threads(1)
     payload = pickle.loads(state_bytes)
     net = build_net(payload["d_model"], payload["heads"],
-                    layers=payload.get("layers", 2))
+                    state_dim=payload.get("state_dim", STATE_DIM),
+                    act_dim=payload.get("act_dim", ACT_DIM),
+                    layers=payload.get("layers", 2),
+                    attn_blocks=2 if any(k.startswith("attn2.")
+                                         for k in payload["state_dict"])
+                    else 1)
     net.load_state_dict(payload["state_dict"])
     net.eval()
     rng = random.Random(seed)
+    # v3.1: the learner's own seats get policy-guided IS-MCTS once the
+    # hand has narrowed (< SEARCH_CARDS cards left on the table).  Depth
+    # and breadth stay small — beliefs are still fuzzy there, and the
+    # search only needs to catch tactical blunders, not re-plan the
+    # hand; the exact solver inside the agent takes over <= 14 as ever.
+    # Opponent seats stay raw policies: they are the field to beat.
+    searcher = None
+    if not exploit_path and search_rollouts:
+        try:
+            from big2.agent import IntegratedAgent
+            searcher = IntegratedAgent(
+                PPOPolicy(net), simulations=64, depth=search_depth,
+                breadth=6, top_p=0.9, time_budget=0.10, seed=seed,
+            )
+        except Exception:
+            searcher = None
     if exploit_path:
         # Pure best response: every opponent seat is the frozen target.
         target = _load_snapshot_policy(exploit_path)
@@ -630,10 +793,28 @@ def rollout_games(args) -> bytes:
         selfplay_prob = 0.0
     else:
         pool = _opponent_pool()
+        if hard_pool:
+            # Crush-phase diet: only the hardest members — the exploiter
+            # and the humanlike clone.  The soft scripted/linear seats
+            # stop diluting the best-response gradient.
+            hard = [p for p in (
+                _load_snapshot_policy("big2/policies/ppo_exploiter.pt"),
+                _load_snapshot_policy("big2/policies/humanlike.pt"),
+            ) if p is not None]
+            pool = hard or pool
         past_selves = [
             p for p in (_load_snapshot_policy(pth) for pth in snapshot_paths)
             if p is not None
         ]
+    champ_seats: List[Strategy] = []
+    if not exploit_path and champ_prob > 0:
+        # The models the run is explicitly trying to dethrone get a
+        # dedicated seat (below), not just wildcard visits.
+        files = (champ_files if champ_files else
+                 ("big2/policies/ppo_attn_v11.pt",
+                  "big2/policies/ppo_attn.pt"))
+        champ_seats = [p for p in (_load_snapshot_policy(f)
+                                   for f in files) if p is not None]
     episodes = []
 
     for _ in range(n_games):
@@ -644,6 +825,10 @@ def rollout_games(args) -> bytes:
                    if isinstance(num_players, (tuple, list))
                    else num_players)
         selfplay = rng.random() < selfplay_prob
+        # Diversity injection: this table (with probability
+        # ``random_draw``) seats every opponent by fresh draw from the
+        # whole collection instead of the structured seating.
+        rd_table = rng.random() < random_draw
         if selfplay:
             ppo_seats = set(range(n_seats))
         else:
@@ -652,6 +837,17 @@ def rollout_games(args) -> bytes:
         others = [p for p in range(n_seats) if p not in ppo_seats]
         rng.shuffle(others)
         for j, p in enumerate(others):
+            if rd_table:
+                # Anti-overfit mix: every opponent seat is a fresh draw
+                # from the whole collection (champions and humanlike at
+                # double weight), so no specific table composition is
+                # common enough to hyper-optimize against; at most one
+                # seat (j == 0) may instead be a recent old self.
+                if j == 0 and past_selves and rng.random() < past_self_prob:
+                    opponents[p] = rng.choice(past_selves)
+                else:
+                    opponents[p] = rng.choice(_weighted_collection(preferred))
+                continue
             # One seat per table is DEDICATED to a wildcard from the
             # whole collection; the rest draw lean pool + past selves.
             # Heads-up tables have only one opponent seat, so there the
@@ -661,11 +857,21 @@ def rollout_games(args) -> bytes:
             )
             if wildcard:
                 opponents[p] = rng.choice(_wide_collection())
+            # Dedicated champion seat: WangBot_v1 or PPO v1 directly.
+            elif (champ_seats and j == 1 and len(others) >= 2
+                  and rng.random() < champ_prob):
+                opponents[p] = rng.choice(champ_seats)
             # League-style: previous generations sit at the table too.
             elif past_selves and rng.random() < past_self_prob:
                 opponents[p] = rng.choice(past_selves)
             else:
                 opponents[p] = rng.choice(pool)
+        if (len(fixed_seats) >= 3 and n_seats == 4 and not selfplay
+                and rng.random() < fixed_prob):
+            trio = fixed_seats[:3]
+            rng.shuffle(trio)
+            for j, p in enumerate(others):
+                opponents[p] = trio[j]
         seat_keys = {p: o.name for p, o in opponents.items()}
         game = Big2Game(
             scoring=ScoringConfig(), rules=DEFAULT_RULES,
@@ -683,9 +889,14 @@ def rollout_games(args) -> bytes:
                 game.step(opponents[p].select(game, p))
                 continue
             options, state, acts = encode_decision(
-                game, p, book=_PROFILE_BOOK, seat_keys=seat_keys,
+                game, p,
+                book=_PROFILE_BOOK if use_profiles else None,
+                seat_keys=seat_keys,
+                include_profiles=net.state_dim != FEAT_DIM,
                 include_danger=net.act_dim >= ACT_DIM_V11,
-                include_plan=net.act_dim >= ACT_DIM,
+                include_plan=(net.act_dim >= ACT_DIM
+                              and net.state_dim >= STATE_DIM),
+                include_beat=net.act_dim >= ACT_DIM_BEAT,
             )
             if len(options) == 1:
                 game.step(options[0])
@@ -698,7 +909,24 @@ def rollout_games(args) -> bytes:
                 )
                 dist = torch.distributions.Categorical(logits=logits[0])
                 idx = int(dist.sample())
-                logp = float(dist.log_prob(torch.tensor(idx)))
+            if searcher is not None:
+                from big2.endgame import move_key as _mk
+                from big2.endgame import remaining_cards as _rc
+                limit = (SEARCH_CARDS_4P if n_seats == 4
+                         else SEARCH_CARDS_23P)
+                if _rc(game) < limit:
+                    # Search proposes; the executed move is logged with
+                    # the net's own logp so PPO's clipped ratio stays
+                    # anchored to the policy that produced the batch.
+                    try:
+                        dec = searcher.explain(game, p)
+                        for j, m in enumerate(options):
+                            if _mk(m) == dec.move:
+                                idx = j
+                                break
+                    except Exception:
+                        pass
+            logp = float(dist.log_prob(torch.tensor(idx)))
             t = trajs[p]
             t["state"].append(state)
             t["acts"].append(acts)
@@ -715,7 +943,12 @@ def rollout_games(args) -> bytes:
             if t["state"]:
                 episodes.append(
                     {**{k: v for k, v in t.items()},
-                     "score": game.scores[p] / SCORE_SCALE}
+                     "score": game.scores[p] / SCORE_SCALE,
+                     # Field games (real opponents at the table) feed the
+                     # learner's recent-form gate; pure self-play mirrors
+                     # score ~0 by symmetry and would only dilute it.
+                     "field": not selfplay,
+                     "n_seats": n_seats}
                 )
     return pickle.dumps(episodes)
 
@@ -784,12 +1017,63 @@ def train_ppo(
     #   and net, on the smaller game where credit assignment is cleanest;
     #   a tuple like (2, 3, 4) alternates table sizes per game
     #   and net, on the smaller game where credit assignment is cleanest
-    confirm_panel: bool = True,  # probe AND confirm against random draws
-    #   from the mixed field (diet, peers, past selves) instead of three
-    #   copies of one reference — a fixed-reference probe measures a
-    #   matchup, not strength.  Forced off for exploiter runs, where
-    #   points extracted from the single target is the entire metric.
+    confirm_panel: bool = True,  # gate on the training distribution: the
+    #   probe metric is the rolling mean of recent rollout scores on 4p
+    #   field games (the exact mix diet_confirm retests, measured for
+    #   free), and confirmation is diet_confirm on the same mix.  Forced
+    #   off for exploiter runs, where points extracted from the single
+    #   target is the entire metric.
+    recent_window: int = 1000,  # 4p field games in the recent-form gate;
+    #   ~1/6 of rollout games qualify, so 1000 spans roughly the last
+    #   6k training games — recent enough to track the current net,
+    #   wide enough that its noise matches the old 120-game probe.
     note: Optional[str] = None,  # version label stored in saved meta
+    attn_blocks: int = 1,  # move-interaction depth (see build_net); a
+    #   1-block checkpoint warm-starts into 2 blocks unchanged thanks to
+    #   the zero-initialized second block
+    hard_pool: bool = False,  # rollout opponents: lean pool trimmed to
+    #   the exploiter + humanlike clone only (crush phase); wildcard and
+    #   past-self seats unaffected, confirmation mix unaffected
+    champ_prob: float = 0.0,  # per-table chance (tables with >= 2
+    #   opponent seats) that one seat is a shipped champion drawn from
+    #   {WangBot_v1, PPO v1} — the models this run is out to beat
+    random_draw: float = 0.0,  # per-table probability of anti-overfit
+    #   seating: every opponent seat drawn fresh from the whole
+    #   collection, at most one seat a recent old self (overrides
+    #   wildcard/champ/hard_pool for that table).  1.0 = every table
+    state_dim: int = STATE_DIM,  # input widths: the feature ladder
+    act_dim: int = ACT_DIM,  # trains nets at historical widths (v1
+    #   275/296, +danger 310, +profiles 299, full 323/326); encoding
+    #   gates itself off these, and widen_state_dict zero-pads a
+    #   narrower checkpoint into the next stage
+    search_rollouts: bool = True,  # False = pure policy rollouts (the
+    #   ladder trains the policy net first; the tree returns later)
+    snapshot_dir: Optional[str] = None,  # past-self/breakout snapshot
+    #   directory; concurrent runs must each get their own (shared dirs
+    #   race on Windows file locks and cross-feed past selves)
+    use_profiles: bool = True,  # False zero-feeds the opponent-profile
+    #   columns during training, matching eval/deployment (which never
+    #   supply a profile book) — the low-bias directive: no cross-game
+    #   opponent inference in the inputs
+    search_depth: int = 4,  # tree depth for search-assisted rollouts:
+    #   ~a trick plus three rotations (10) plays the exchange out, then
+    #   the value head prices the resulting position; opponents inside
+    #   the tree play the agent's own distribution
+    champ_files: Optional[Sequence[str]] = None,  # dedicated-seat and
+    #   weighted-pool-boost opponents (default: the shipped champions);
+    #   chain C passes the A/B finals here
+    fixed_files: Optional[Sequence[str]] = None,  # chain D's table: with
+    #   probability fixed_prob a rollout game seats exactly these three
+    #   models (shuffled) as the opponents
+    fixed_prob: float = 0.0,
+    confirm_files: Optional[Sequence[str]] = None,  # confirmation-room
+    #   members (default CONFIRM_FILES)
+    imitate_path: Optional[str] = None,  # frozen teacher net: adds a
+    #   KL(student || teacher) term on visited states — chain C anchors
+    #   to the humanlike clone while learning to win
+    imitate_coef: float = 0.0,
+    confirm_deployed: bool = True,  # False = confirmation plays the raw
+    #   policy instead of the search-assisted deployed shape
     device: str = "auto",  # learner device: cuda when available, else
     #   cpu.  Rollout workers always run cpu -- batch-1 inference in a
     #   Python game loop loses more to transfer than a GPU gives back;
@@ -803,13 +1087,26 @@ def train_ppo(
     if device == "auto":
         device = "cuda" if torch.cuda.is_available() else "cpu"
     dev = torch.device(device)
-    net = build_net(d_model, heads, layers=layers)
+    net = build_net(d_model, heads, state_dim=state_dim, act_dim=act_dim,
+                    layers=layers, attn_blocks=attn_blocks)
     net.to(dev)
     best_probe = -1e9
     if resume:
         payload = torch.load(resume, map_location="cpu", weights_only=True)
-        # Pre-profile checkpoints warm-start via zero-column widening.
-        net.load_state_dict(widen_state_dict(payload["state_dict"], STATE_DIM))
+        # Pre-profile checkpoints warm-start via zero-column widening;
+        # pre-attn2 checkpoints warm-start via the zero-initialized
+        # second block (the only keys allowed to be missing).
+        res = net.load_state_dict(
+            widen_state_dict(payload["state_dict"], state_dim, act_dim),
+            strict=False,
+        )
+        bad = [k for k in res.missing_keys
+               if not k.startswith(("attn2.", "norm2."))]
+        if bad or res.unexpected_keys:
+            raise RuntimeError(
+                f"resume mismatch: missing {bad}, "
+                f"unexpected {list(res.unexpected_keys)}"
+            )
         # Don't let a resumed run overwrite a better checkpoint with its
         # first mediocre probe: inherit the saved best — unless this is an
         # exploiter warm start (metric starts fresh) or the run writes to
@@ -828,6 +1125,31 @@ def train_ppo(
     from big2.evolve import _probe
 
     probe_baselines = [SmartHeuristic(), DecompositionStrategy(), FiveCardDumper()]
+    # Confirmation pool: seats drawn with replacement per game —
+    # stationary (no past selves), exactly the room to beat.
+    confirm_champs: List[Strategy] = (
+        confirm_pool(confirm_files) if confirm_panel else []
+    )
+
+    imitator = None
+    if imitate_path and imitate_coef > 0:
+        ipay = torch.load(imitate_path, map_location="cpu",
+                          weights_only=True)
+        isd = ipay["state_dict"]
+        imitator = build_net(
+            ipay.get("d_model", 192), ipay.get("heads", 4),
+            state_dim=isd["state_mlp.0.weight"].shape[1],
+            act_dim=isd["act_mlp.0.weight"].shape[1],
+            layers=sum(1 for k in isd
+                       if k.startswith("state_mlp.") and
+                       k.endswith(".weight")),
+            attn_blocks=2 if any(k.startswith("attn2.") for k in isd)
+            else 1,
+        )
+        imitator.load_state_dict(isd)
+        imitator.to(dev).eval()
+        if imitator.state_dim > state_dim or imitator.act_dim > act_dim:
+            raise ValueError("imitation teacher wider than the student")
     champs: List[Strategy] = []
     for loader in (
         lambda: LinearPolicy.load("big2/policies/linear_cem.npz"),
@@ -843,7 +1165,9 @@ def train_ppo(
         except Exception:
             pass
 
-    snap_dir = os.path.join(os.path.dirname(out) or ".", "ppo_snapshots")
+    snap_dir = snapshot_dir or os.path.join(
+        os.path.dirname(out) or ".", "ppo_snapshots"
+    )
     os.makedirs(snap_dir, exist_ok=True)
 
     def _atomic_save(payload, path):
@@ -872,31 +1196,36 @@ def train_ppo(
         champs = [PPOPolicy.load(exploit_target) for _ in range(3)]
         confirm_panel = False
 
-    panel: List[Strategy] = []
-    if confirm_panel:
-        panel = confirmation_panel(probe_vs, snapshot_dir=snap_dir)
-        if verbose:
-            names = ", ".join(getattr(p, "name", "?") for p in panel)
-            print(f"[ppo] confirmation panel ({len(panel)}): {names}",
-                  flush=True)
-
-    diet_best = -1e9  # high-water mark for the vs-diet probe series
+    # Recent form on the training distribution: per-game scores from 4p
+    # field games, streamed out of the rollouts themselves.  This is the
+    # gate metric — the same mix diet_confirm retests, at zero probe cost.
+    recent_field: deque = deque(maxlen=recent_window)
+    diet_best = -1e9  # high-water mark for the recent-form series
 
     for it in range(1, iters + 1):
         blob = pickle.dumps(
             {"state_dict": {k: v.cpu() for k, v in net.state_dict().items()},
-             "d_model": d_model, "heads": heads, "layers": layers}
+             "d_model": d_model, "heads": heads, "layers": layers,
+             "state_dim": state_dim, "act_dim": act_dim}
         )
         per = games_per_iter // workers
         snaps = [] if exploit_target else _snapshot_paths()
         results = pool.map(
             rollout_games,
             [(blob, per, rng.randrange(2**31), selfplay_prob, snaps,
-              past_self_prob, exploit_target, num_players, wildcard_prob)
+              past_self_prob, exploit_target, num_players, wildcard_prob,
+              hard_pool, champ_prob, random_draw, search_rollouts,
+              use_profiles, search_depth,
+              tuple(champ_files) if champ_files else None,
+              tuple(fixed_files) if fixed_files else None, fixed_prob)
              for _ in range(workers)],
         )
         episodes = [e for r in results for e in pickle.loads(r)]
         total_games += per * workers
+        recent_field.extend(
+            e["score"] * SCORE_SCALE for e in episodes
+            if e.get("field") and e.get("n_seats") == 4
+        )
 
         flat_state, flat_acts, flat_mask = [], [], []
         flat_chosen, flat_logp, flat_adv, flat_ret, flat_belief = [], [], [], [], []
@@ -905,7 +1234,7 @@ def train_ppo(
             adv, ret = _gae(e["value"], e["score"])
             for i, acts in enumerate(e["acts"]):
                 A = len(acts)
-                padded = np.zeros((max_a, ACT_DIM), dtype=np.float32)
+                padded = np.zeros((max_a, act_dim), dtype=np.float32)
                 padded[:A] = acts
                 flat_state.append(e["state"][i])
                 flat_acts.append(padded)
@@ -941,7 +1270,14 @@ def train_ppo(
                 logits, value, belief = net(S[idx], A_[idx], M[idx])
                 dist = torch.distributions.Categorical(logits=logits)
                 logp = dist.log_prob(C[idx])
-                ratio = torch.exp(logp - LP[idx])
+                # Search-executed moves can sit far out in the policy's
+                # tail (large negative stored logp), and once entropy is
+                # low the multi-epoch update can push the log-ratio past
+                # float range — exp overflows to inf and one bad
+                # minibatch NaNs the net (this killed a run at iter 90).
+                # Past the PPO clip band the surrogate is flat anyway,
+                # so clamping the log-ratio changes nothing legitimate.
+                ratio = torch.exp((logp - LP[idx]).clamp(-20.0, 4.0))
                 surr = torch.min(
                     ratio * ADV[idx],
                     torch.clamp(ratio, 1 - clip, 1 + clip) * ADV[idx],
@@ -956,6 +1292,25 @@ def train_ppo(
                     p_loss + vf_coef * v_loss - ent_coef * e_loss
                     + belief_coef * b_loss
                 )
+                if imitator is not None:
+                    with torch.no_grad():
+                        t_logits, _, _ = imitator(
+                            S[idx][:, :imitator.state_dim],
+                            A_[idx][:, :, :imitator.act_dim],
+                            M[idx],
+                        )
+                    i_loss = torch.nn.functional.kl_div(
+                        torch.log_softmax(logits, dim=-1),
+                        torch.softmax(t_logits, dim=-1),
+                        reduction="batchmean",
+                    )
+                    loss = loss + imitate_coef * i_loss
+                if not torch.isfinite(loss):
+                    # One poisoned minibatch must not NaN the whole
+                    # net; skip it and let the next one proceed.
+                    print("[ppo] non-finite loss, minibatch skipped",
+                          flush=True)
+                    continue
                 opt.zero_grad()
                 loss.backward()
                 torch.nn.utils.clip_grad_norm_(net.parameters(), 1.0)
@@ -993,7 +1348,9 @@ def train_ppo(
             if dev.type == "cpu":
                 policy = PPOPolicy(net)
             else:
-                twin = build_net(d_model, heads, layers=layers)
+                twin = build_net(d_model, heads, state_dim=state_dim,
+                                 act_dim=act_dim, layers=layers,
+                                 attn_blocks=attn_blocks)
                 twin.load_state_dict(
                     {k: v.cpu() for k, v in net.state_dict().items()}
                 )
@@ -1002,13 +1359,15 @@ def train_ppo(
                 policy, probe_baselines, probe_games, ScoringConfig(),
                 DEFAULT_RULES, seed=it,
             )
-            if confirm_panel and panel:
-                # The gate metric: random 3-member draws from the mixed
-                # field per game.  A table of 3 copies of one reference
-                # measures that matchup; this measures strength.
-                vs_champ = panel_probe(
-                    policy, panel, probe_games, ScoringConfig(),
-                    DEFAULT_RULES, seed=it + 1,
+            if confirm_panel:
+                # The gate metric: the learner's own recent rollout
+                # scores on 4p field games — the training distribution
+                # itself, measured for free.  A separate probe field
+                # would gate on a different metric than the one the
+                # confirmation retests.
+                vs_champ = (
+                    sum(recent_field) / len(recent_field)
+                    if len(recent_field) >= 120 else float("nan")
                 )
             else:
                 vs_champ = (
@@ -1017,17 +1376,10 @@ def train_ppo(
                     if len(champs) == 3
                     else float("nan")
                 )
-            # Performance against the actual training diet (minus
-            # self-play): the exact opponents it is learning to beat.
-            diet = _opponent_pool()
-            diet = (diet + diet)[:3]
-            vs_diet = _probe(
-                policy, diet, probe_games, ScoringConfig(), DEFAULT_RULES,
-                seed=it + 2,
-            )
+            vs_diet = vs_champ
             tag = 6 if exploit_target else 5
             label = ("vs-target" if exploit_target
-                     else "vs-panel" if (confirm_panel and panel)
+                     else "recent-field" if confirm_panel
                      else f"vs-{os.path.basename(probe_vs).split('.')[0]}"
                      if probe_vs else "vs-champions")
             os.makedirs(os.path.dirname(progress_path), exist_ok=True)
@@ -1076,19 +1428,34 @@ def train_ppo(
                     key=os.path.getmtime,
                 )
                 for stale in breakouts[:-2]:
-                    os.remove(stale)
+                    try:
+                        os.remove(stale)
+                    except OSError:
+                        pass  # locked by a reader; retire it next round
 
                 # Two-stage gate: a 120-game probe is +-1 noisy, so a
                 # would-be best must confirm on an independent larger
                 # re-test; the confirmed number is what gets recorded.
-                if confirm_panel:
-                    # Probe said "beats the field"; confirmation asks the
-                    # question the file actually stands for -- does it
-                    # beat its own training diet, at a sample size where
-                    # deal luck is gone and every deal is fresh.
+                if confirm_panel and confirm_champs:
+                    # Probe said "beats the field"; confirmation asks
+                    # the question the file actually stands for -- does
+                    # the candidate beat the champions' room: seats
+                    # drawn with replacement from {WangBot_v1, PPO v1,
+                    # humanlike}, fresh deals, rotated seats.  The
+                    # candidate plays deployed (search assist) or raw
+                    # per confirm_deployed — the ladder gates on the
+                    # raw policy, the main line on the deployed shape.
+                    cand = (SearchAssist(policy, seed=it)
+                            if confirm_deployed else policy)
+                    confirmed = replacement_probe(
+                        cand, confirm_champs,
+                        confirm_games, ScoringConfig(), DEFAULT_RULES,
+                        seed=it + 7919,
+                    )
+                elif confirm_panel:
                     confirmed = diet_confirm(
-                        policy, confirm_games, ScoringConfig(),
-                        DEFAULT_RULES, seed=it + 7919,
+                        SearchAssist(policy, seed=it), confirm_games,
+                        ScoringConfig(), DEFAULT_RULES, seed=it + 7919,
                         snapshot_paths=_snapshot_paths(),
                         past_self_prob=past_self_prob,
                     )
@@ -1110,7 +1477,9 @@ def train_ppo(
                     best_probe = confirmed
                     meta = {"iter": it, "games": total_games,
                             "probe": confirmed,
-                            "confirm_games": confirm_games}
+                            "confirm_games": confirm_games,
+                            "metric": ("champs-replacement"
+                                       if confirm_champs else "diet")}
                     if note:
                         meta["note"] = note
                     _atomic_save(

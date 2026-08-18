@@ -121,6 +121,12 @@ def leaderboard():
     return _handle(webapi.leaderboard)
 
 
+@app.route("/api/bot_records", methods=["POST"])
+def bot_records():
+    # Public: each bot's running record against the humans.
+    return _handle(webapi.bot_records)
+
+
 @app.route("/api/register", methods=["POST"])
 def register():
     return _handle(webapi.register_user)

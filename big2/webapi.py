@@ -93,6 +93,16 @@ def make_ai(name: str, seed: Optional[int] = None) -> Strategy:
             return NNPolicy.load(_policy_path("evo_mlp.npz"))
         except Exception:
             return SmartHeuristic()
+    if name in ("wangbot2", "sicario", "leonidas"):
+        # The chain finals (2026-08-18): the locked default table.
+        stems = {"wangbot2": "wangbot_v2", "sicario": "sicario_v1",
+                 "leonidas": "leonidas_v1"}
+        try:
+            from big2.neural import PPOPolicy
+
+            return PPOPolicy.load(_policy_path(f"{stems[name]}.pt"))
+        except Exception:
+            return make_ai("ppo11", seed)
     if name in ("ppo", "ppo11"):
         # torch is training-only; deploys use the numpy inference port.
         # 'ppo' is the shipped v1 champion; 'ppo11' the endgame-aware
@@ -130,17 +140,22 @@ def make_ai(name: str, seed: Optional[int] = None) -> Strategy:
 
 
 AI_KINDS = [
+    "wangbot2", "sicario", "leonidas",
     "smart", "ppo", "ppo11", "evo", "dmc", "ismcts", "decomp", "linear",
     "dumper", "lowest", "highest", "random",
 ]
 
 # Public display names where they differ from the internal kind (the
 # kind string stays stable so serialized games keep deserializing).
-KIND_LABEL = {"ppo11": "WangBot_v1"}
+KIND_LABEL = {"ppo11": "WangBot_v1", "wangbot2": "WangBot_v2",
+              "sicario": "Sicario", "leonidas": "Leonidas"}
 
 _POLICY_FILES = {
     "ppo": "ppo_attn.pt",
     "ppo11": "ppo_attn_v11.pt",
+    "wangbot2": "wangbot_v2.pt",
+    "sicario": "sicario_v1.pt",
+    "leonidas": "leonidas_v1.pt",
     "evo": "evo_mlp.npz",
     "linear": "linear_cem.npz",
     "dmc": "dmc_linear.npz",
@@ -487,6 +502,13 @@ def leaderboard(_body: Optional[Dict] = None) -> Dict:
     from big2.store import get_store
 
     return get_store().leaderboard()
+
+
+def bot_records(_body: Optional[Dict] = None) -> Dict:
+    """Per-bot running record against human players (public)."""
+    from big2.store import get_store
+
+    return get_store().bot_records()
 
 
 def progress(_body: Optional[Dict] = None) -> Dict:

@@ -7,3 +7,8 @@ big2/policies/evolve/*
 !big2/policies/evolve/progress.csv
 big2/policies/ppo_snapshots/
 big2/data/
+
+big2/policies/ppo_snapshots_*/
+*.log
+replays.jsonl
+big2/policies/ppo_v3_latest_500k_backup.pt
