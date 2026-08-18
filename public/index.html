@@ -422,11 +422,14 @@ function renderAiRows() {
   const rows = $("aiRows");
   const prev = [...rows.querySelectorAll("select")].map((s) => s.value);
   rows.innerHTML = "";
-  for (let i = 1; i <= numAi; i++) {
+  // Public players pick ONE model and it fills every AI seat; admins
+  // still compose mixed tables seat by seat.
+  const seats = admin ? numAi : 1;
+  for (let i = 1; i <= seats; i++) {
     const row = document.createElement("div");
     row.className = "ai-row";
     const label = document.createElement("label");
-    label.textContent = "AI " + i;
+    label.textContent = admin ? "AI " + i : "Model";
     const sel = document.createElement("select");
     sel.dataset.idx = i;
     const kinds = admin ? AI_KINDS : PUBLIC_KINDS;
@@ -450,9 +453,9 @@ function renderAiRows() {
   note.textContent = admin
     ? "Admin: any lineup and table size; games still record under each " +
       "model's version stamp."
-    : "Default table: WangBot_v1, trained with endgame awareness of " +
-      "opponents' card counts. PPO v1 is the previous champion - mix " +
-      "and match seats.";
+    : "Your pick plays every AI seat. WangBot_v1 (default) is trained " +
+      "with endgame awareness of opponents' card counts; PPO v1 is the " +
+      "previous champion.";
 }
 
 $("numAiSeg").addEventListener("click", (e) => {
@@ -465,9 +468,12 @@ $("numAiSeg").addEventListener("click", (e) => {
 
 function currentSettings() {
   // House rules are fixed for players; admins can deal rule variants.
+  const sels = [...$("aiRows").querySelectorAll("select")];
   const s = {
     num_ai: numAi,
-    ai: [...$("aiRows").querySelectorAll("select")].map((sel) => sel.value),
+    ai: isAdmin()
+      ? sels.map((sel) => sel.value)
+      : Array(numAi).fill(sels[0].value),  // one model, every seat
   };
   if (isAdmin()) {
     s.rules = {
