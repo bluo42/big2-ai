@@ -497,6 +497,52 @@ def _opponent_pool() -> List[Strategy]:
 # so a refreshed snapshot file is reloaded exactly once per worker.
 _SNAP_CACHE: Dict[Tuple[str, float], "PPOPolicy"] = {}
 
+# Worker-side wildcard collection: every playable model in the project,
+# for the occasional random seat that keeps the diet from going stale.
+_WIDE_POOL: Optional[List[Strategy]] = None
+
+
+def _wide_collection() -> List[Strategy]:
+    """The whole zoo, loaded lazily and defensively.
+
+    A seat drawn from here (at ``wildcard_prob``) confronts the learner
+    with a style the lean pool does not carry: the scripted regulars,
+    the decomposition baseline, the evolved/DMC/CEM champions, both
+    shipped PPO lines, the humanlike clone, and the exploiter.
+    """
+    global _WIDE_POOL
+    if _WIDE_POOL is not None:
+        return _WIDE_POOL
+    from big2.strategies import PlayLowest
+
+    pool: List[Strategy] = [FiveCardDumper(), SmartHeuristic(), PlayLowest()]
+    try:
+        from big2.decomposition import DecompositionStrategy
+
+        pool.append(DecompositionStrategy())
+    except Exception:
+        pass
+    for loader in (
+        lambda: LinearPolicy.load("big2/policies/linear_cem.npz"),
+        lambda: __import__("big2.nn", fromlist=["NNPolicy"]).NNPolicy.load(
+            "big2/policies/evo_mlp.npz"),
+        lambda: __import__("big2.dmc", fromlist=["DMCPolicy"]).DMCPolicy.load(
+            "big2/policies/dmc_linear.npz"),
+    ):
+        try:
+            pool.append(loader())
+        except Exception:
+            pass
+    for path in ("big2/policies/ppo_attn.pt",       # PPO v1
+                 "big2/policies/ppo_attn_v11.pt",   # WangBot_v1
+                 "big2/policies/humanlike.pt",
+                 "big2/policies/ppo_exploiter.pt"):
+        p = _load_snapshot_policy(path)
+        if p is not None:
+            pool.append(p)
+    _WIDE_POOL = pool
+    return pool
+
 # Worker-side cross-game opponent profiles: persists across games within
 # the worker process; recency-weighted EMA with a ~500-game half-life.
 _PROFILE_BOOK = OpponentProfileBook(half_life_games=500)
@@ -522,7 +568,7 @@ def _load_snapshot_policy(path: str) -> Optional["PPOPolicy"]:
 def rollout_games(args) -> bytes:
     """Worker: play games with the given weights, return episode batch."""
     (state_bytes, n_games, seed, selfplay_prob, snapshot_paths,
-     past_self_prob, exploit_path, num_players) = args
+     past_self_prob, exploit_path, num_players, wildcard_prob) = args
     import torch
 
     torch.set_num_threads(1)
@@ -547,24 +593,34 @@ def rollout_games(args) -> bytes:
     episodes = []
 
     for _ in range(n_games):
+        # Alternating table sizes trains every head across counts: the
+        # 2p game is the clean credit-assignment classroom, 4p is the
+        # deployed game, 3p sits between.
+        n_seats = (rng.choice(num_players)
+                   if isinstance(num_players, (tuple, list))
+                   else num_players)
         selfplay = rng.random() < selfplay_prob
         if selfplay:
-            ppo_seats = set(range(num_players))
+            ppo_seats = set(range(n_seats))
         else:
-            ppo_seats = {rng.randrange(num_players)}
+            ppo_seats = {rng.randrange(n_seats)}
         opponents = {}
-        for p in range(num_players):
+        for p in range(n_seats):
             if p in ppo_seats:
                 continue
+            # A wildcard seat from the whole collection keeps styles the
+            # lean pool lacks in circulation.
+            if wildcard_prob and rng.random() < wildcard_prob:
+                opponents[p] = rng.choice(_wide_collection())
             # League-style: previous generations sit at the table too.
-            if past_selves and rng.random() < past_self_prob:
+            elif past_selves and rng.random() < past_self_prob:
                 opponents[p] = rng.choice(past_selves)
             else:
                 opponents[p] = rng.choice(pool)
         seat_keys = {p: o.name for p, o in opponents.items()}
         game = Big2Game(
             scoring=ScoringConfig(), rules=DEFAULT_RULES,
-            num_players=num_players,
+            num_players=n_seats,
             rng=random.Random(rng.randrange(2**31)),
         )
         trajs: Dict[int, Dict[str, list]] = {
@@ -673,7 +729,11 @@ def train_ppo(
     init_bar: Optional[float] = None,  # explicit starting bar for the
     #   best-save gate (e.g. the current out-file's known score under a
     #   new metric, so nothing worse ever overwrites it)
-    num_players: int = 4,  # 2 runs the 1v1 curriculum: the same encoders
+    wildcard_prob: float = 0.0,  # per-seat chance of a wildcard opponent
+    #   drawn from the whole collection (_wide_collection)
+    num_players=4,  # 2 runs the 1v1 curriculum: the same encoders
+    #   and net, on the smaller game where credit assignment is cleanest;
+    #   a tuple like (2, 3, 4) alternates table sizes per game
     #   and net, on the smaller game where credit assignment is cleanest
     confirm_panel: bool = True,  # probe AND confirm against random draws
     #   from the mixed field (diet, peers, past selves) instead of three
@@ -775,7 +835,7 @@ def train_ppo(
         results = pool.map(
             rollout_games,
             [(blob, per, rng.randrange(2**31), selfplay_prob, snaps,
-              past_self_prob, exploit_target, num_players)
+              past_self_prob, exploit_target, num_players, wildcard_prob)
              for _ in range(workers)],
         )
         episodes = [e for r in results for e in pickle.loads(r)]

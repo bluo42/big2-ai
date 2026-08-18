@@ -7,12 +7,14 @@ from big2.endgame import (
     boss_move,
     move_key,
     pimc_move_values,
+    remaining_cards,
     solve,
     solve_move_values,
     unbeatable_probability,
 )
 from big2.game import Big2Game, ScoringConfig
 from big2.rules import DEFAULT_RULES
+from big2.strategies import PlayLowest
 
 
 def make_state(hands, turn=0, table=None, played=()):
@@ -154,3 +156,43 @@ class TestPIMC(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestPimcDeadline(unittest.TestCase):
+    def test_an_expired_deadline_stops_the_sweep_quickly(self):
+        import time as _t
+
+        from big2.beliefs import BeliefState
+
+        g = Big2Game(rng=random.Random(31))
+        while remaining_cards(g) > 16:
+            g.step(PlayLowest().select(g, g.turn))
+        p = g.turn
+        worlds = BeliefState(g, p, rng=random.Random(0)).sample_worlds(8)
+        t0 = _t.monotonic()
+        values, agree = pimc_move_values(
+            g, p, worlds, budget=8000, with_agreement=True,
+            deadline=_t.monotonic(),      # already expired
+        )
+        self.assertLess(_t.monotonic() - t0, 0.2)
+        self.assertEqual(values, {})
+
+    def test_a_generous_deadline_changes_nothing(self):
+        import time as _t
+
+        from big2.beliefs import BeliefState
+
+        g = Big2Game(rng=random.Random(32))
+        while not g.game_over and remaining_cards(g) > 12:
+            g.step(PlayLowest().select(g, g.turn))
+        if g.game_over:                    # this seed must end mid-hand
+            g = Big2Game(rng=random.Random(34))
+            while not g.game_over and remaining_cards(g) > 12:
+                g.step(PlayLowest().select(g, g.turn))
+        self.assertFalse(g.game_over)
+        p = g.turn
+        worlds = BeliefState(g, p, rng=random.Random(0)).sample_worlds(6)
+        a = pimc_move_values(g, p, worlds, budget=8000)
+        b = pimc_move_values(g, p, worlds, budget=8000,
+                             deadline=_t.monotonic() + 60.0)
+        self.assertEqual(a, b)

@@ -172,12 +172,17 @@ class IntegratedAgent(Strategy):
         worlds = inf.worlds_for_search(k=24, top=6)
         if not worlds:
             return None
-        # Node budget scaled to the wall clock we are allowed: the solver
-        # is the one component that can blow past a second on a bad shape.
+        # Full node budget at every time budget: the measured strength
+        # of this agent lives in the solver (138 solver decisions vs 46
+        # search overrides drove +0.78/game vs the field), and scaling
+        # nodes down with the clock was what erased the gain at cheap
+        # budgets.  The wall clock is enforced by the *deadline* instead:
+        # the sweep stops mid-worlds when time is up, keeping whatever
+        # it has solved.  The solver gets 65% of the move budget; the
+        # search inherits the remainder.
         values, agreement = pimc_move_values(
-            game, player, worlds,
-            budget=max(500, int(8000 * self.time_budget)),
-            with_agreement=True,
+            game, player, worlds, budget=8000, with_agreement=True,
+            deadline=started + 0.65 * self.time_budget,
         )
         if not values or agreement < 0.6:
             return None      # the deals disagree: not actually determined
@@ -187,6 +192,7 @@ class IntegratedAgent(Strategy):
                         elapsed=time.monotonic() - started)
 
     def explain(self, game: Big2Game, player: int) -> Decision:
+        t0 = time.monotonic()
         options: List[Optional[Combo]] = list(game.legal_moves(player))
         if game.can_pass():
             options.append(None)
@@ -203,6 +209,11 @@ class IntegratedAgent(Strategy):
             return Decision(move_key(self.policy.select(game, player)),
                             "policy", cards_left=left)
 
+        # Whatever the solver spent comes out of the search's clock, so
+        # the decision as a whole honors one budget, not two.
+        self.searcher.time_budget = max(
+            0.05, self.time_budget - (time.monotonic() - t0)
+        )
         res: SearchResult = self.searcher.search(game, player)
         dec = Decision(
             move=res.policy_move,

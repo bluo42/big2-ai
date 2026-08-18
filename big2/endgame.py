@@ -36,6 +36,7 @@ sees the whole payout structure, not just its own EV.
 from __future__ import annotations
 
 import random
+import time
 from typing import Dict, List, Optional, Sequence, Tuple
 
 from big2.cards import Card
@@ -284,6 +285,7 @@ def pimc_move_values(
     worlds: Sequence[Tuple[Dict[int, List[Card]], float]],
     budget: int = DEFAULT_BUDGET,
     with_agreement: bool = False,
+    deadline: Optional[float] = None,
 ):
     """Belief-weighted average exact value of every option.
 
@@ -306,6 +308,12 @@ def pimc_move_values(
     for world, w in worlds:
         if w <= 0.0:
             continue
+        # The node budget bounds one pathological solve; the deadline
+        # bounds the whole sweep -- several worlds each burning their
+        # nodes before aborting is how a "bounded" call blows a wall
+        # clock.  Worlds already solved still count.
+        if deadline is not None and time.monotonic() >= deadline:
+            break
         det = search_clone(game)
         for p, hand in world.items():
             det.hands[p] = sorted(hand)
