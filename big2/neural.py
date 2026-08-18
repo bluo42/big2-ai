@@ -256,7 +256,9 @@ class PPOPolicy(Strategy):
         self.book: Optional[OpponentProfileBook] = None
         self.seat_keys: Optional[Dict[int, object]] = None
 
-    def select(self, game: Big2Game, player: int) -> Optional[Combo]:
+    def option_scores(self, game: Big2Game, player: int):
+        """(options, logits) — the policy's preference over every legal
+        option, for callers that blend it with search (big2/search.py)."""
         import torch
 
         options, state, acts = encode_decision(
@@ -264,15 +266,22 @@ class PPOPolicy(Strategy):
             include_profiles=self.uses_profiles,
             include_danger=self.uses_danger,
         )
-        if len(options) == 1:
-            return options[0]
         with torch.no_grad():
             logits, _, _ = self.net(
                 torch.from_numpy(state).unsqueeze(0),
                 torch.from_numpy(acts).unsqueeze(0),
                 torch.ones(1, len(options), dtype=torch.bool),
             )
-        return options[int(logits[0].argmax())]
+        return options, logits[0].numpy()
+
+    def select(self, game: Big2Game, player: int) -> Optional[Combo]:
+        options = list(game.legal_moves(player))
+        if game.can_pass():
+            options.append(None)
+        if len(options) == 1:
+            return options[0]
+        options, logits = self.option_scores(game, player)
+        return options[int(np.argmax(logits))]
 
     @classmethod
     def load(cls, path: str = DEFAULT_MODEL_PATH) -> "PPOPolicy":
