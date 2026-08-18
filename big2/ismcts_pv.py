@@ -21,9 +21,11 @@ continuous and comes from the evidence.
 
 What the policy contributes, concretely:
 
-* **Breadth** — the prior ranks the legal set, and everything below
-  ``breadth`` is never expanded.  A 30-move position is searched as the
-  six moves worth searching.
+* **Breadth** — the prior ranks the legal set and the search keeps only
+  the moves covering ``top_p`` of its probability mass (never more than
+  ``breadth``).  A 30-move position is searched as the two or three
+  moves actually in contention; moves the net calls obviously bad never
+  cost a simulation.
 * **Rollouts** — the plies after the candidate move are played by the
   policy rather than at random, so the measured value is "what happens
   if I play this and everyone answers competently", not "…and everyone
@@ -88,8 +90,16 @@ TIME_BUDGET = 1.0
 # Never stop before this many simulations, budget or no budget: a search
 # that ran twice is worse than no search at all.
 MIN_SIMULATIONS = 8
-# How many legal moves survive the prior's cut.
-BREADTH = 8
+# The prior's cut is by probability mass, not by count: candidates are
+# kept in descending prior until TOP_P of the mass is covered, floored at
+# 2 and hard-capped at BREADTH.  A confident net searches its top two
+# moves; a torn one gets its whole dilemma searched.  Moves the policy
+# calls obviously bad never cost a simulation — at ~20ms each, spending
+# any of them refuting garbage starves the real comparison.  The safety
+# valve for a policy blind spot is the solved root: inside solver range
+# every legal move is evaluated exactly, with no pruning at all.
+BREADTH = 4
+TOP_P = 0.90
 # Determinizations drawn per decision.  The loop resamples from these with
 # replacement, so more of them buys resolution in the posterior, not more
 # simulations — and drawing them is not free.
@@ -142,6 +152,7 @@ class PolicyValueISMCTS:
         solve_below: int = SOLVE_BELOW,
         time_budget: float = TIME_BUDGET,
         breadth: int = BREADTH,
+        top_p: float = TOP_P,
         rollout_temp: float = 0.8,
     ):
         self.policy = policy
@@ -152,6 +163,7 @@ class PolicyValueISMCTS:
         self.solve_below = solve_below
         self.time_budget = float(time_budget)
         self.breadth = int(breadth)
+        self.top_p = float(top_p)
         self.rollout_temp = float(rollout_temp)
 
     # ------------------------------------------------------------------
@@ -355,11 +367,20 @@ class PolicyValueISMCTS:
             return self._solved_root(game, player, options, prior, keys,
                                      policy_move, left, started)
 
-        # Breadth: the prior's job is to say which moves are not worth a
-        # simulation.  Everything outside the cut keeps its entry in the
-        # report with zero visits, so the caller still sees it was seen.
+        # The prior's job is to say which moves are not worth a
+        # simulation.  Keep candidates in descending prior until top_p of
+        # the mass is covered (>=2, <=breadth); everything outside the
+        # cut keeps its entry in the report with zero visits, so the
+        # caller still sees it was considered and dismissed.
         order = sorted(range(len(options)), key=lambda i: -prior[i])
-        cand = sorted(order[: max(2, self.breadth)])
+        keep, mass = [], 0.0
+        for i in order:
+            if len(keep) >= 2 and (mass >= self.top_p
+                                   or len(keep) >= max(2, self.breadth)):
+                break
+            keep.append(i)
+            mass += prior[i]
+        cand = sorted(keep)
 
         # Enough worlds that the posterior is represented, few enough that
         # sampling them is not itself the cost of the search.

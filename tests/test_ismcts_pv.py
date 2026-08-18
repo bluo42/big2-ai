@@ -143,6 +143,42 @@ class TestSearchBehaviour(unittest.TestCase):
         self.assertLess(res.elapsed, 1.5)
         self.assertLess(res.simulations, 100000)
 
+    def test_a_confident_prior_prunes_to_two_candidates(self):
+        """Moves the net calls obviously bad never cost a simulation."""
+
+        class _Sure(_Peaked):
+            def option_scores(self, game, player):
+                options, scores = super().option_scores(game, player)
+                s = np.full(len(options), -12.0)
+                s[int(np.argmax(scores))] = 12.0     # ~certain
+                return options, s
+
+        g = Big2Game(rng=random.Random(11))
+        for _ in range(4):
+            g.step(PlayLowest().select(g, g.turn))
+        while not g.game_over and len(g.legal_moves(g.turn)) < 6:
+            g.step(PlayLowest().select(g, g.turn))
+        res = PolicyValueISMCTS(_Sure(), simulations=40, seed=1).search(
+            g, g.turn)
+        searched = [k for k, v in res.visits.items() if v > 0]
+        self.assertEqual(len(searched), 2)
+
+    def test_a_torn_prior_widens_to_the_cap(self):
+        class _Flat(_Peaked):
+            def option_scores(self, game, player):
+                options, scores = super().option_scores(game, player)
+                return options, np.zeros(len(options))   # no opinion
+
+        g = Big2Game(rng=random.Random(11))
+        for _ in range(4):
+            g.step(PlayLowest().select(g, g.turn))
+        while not g.game_over and len(g.legal_moves(g.turn)) < 6:
+            g.step(PlayLowest().select(g, g.turn))
+        res = PolicyValueISMCTS(_Flat(), simulations=60, breadth=4,
+                                seed=1).search(g, g.turn)
+        searched = [k for k, v in res.visits.items() if v > 0]
+        self.assertEqual(len(searched), 4)
+
     def test_breadth_is_cut_by_the_prior(self):
         g = Big2Game(rng=random.Random(11))
         for _ in range(4):

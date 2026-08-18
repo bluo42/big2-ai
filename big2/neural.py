@@ -220,9 +220,22 @@ def belief_target(game: Big2Game, player: int) -> np.ndarray:
 
 
 def build_net(d_model: int = 192, heads: int = 4, state_dim: int = STATE_DIM,
-              act_dim: int = ACT_DIM):
+              act_dim: int = ACT_DIM, layers: int = 2):
+    """``layers`` counts Linear layers in each input MLP (2 = the
+    original shape every shipped checkpoint has; 3 adds one d->d block
+    to both towers).  Depth and width (``d_model``) are the two axes of
+    the capacity experiments."""
     import torch
     import torch.nn as nn
+
+    def _tower(in_dim: int, final_relu: bool) -> nn.Sequential:
+        mods = [nn.Linear(in_dim, d_model), nn.ReLU()]
+        for i in range(max(2, layers) - 2):
+            mods += [nn.Linear(d_model, d_model), nn.ReLU()]
+        mods.append(nn.Linear(d_model, d_model))
+        if final_relu:
+            mods.append(nn.ReLU())
+        return nn.Sequential(*mods)
 
     class Big2Net(nn.Module):
         def __init__(self):
@@ -230,14 +243,9 @@ def build_net(d_model: int = 192, heads: int = 4, state_dim: int = STATE_DIM,
             self.d = d_model
             self.state_dim = state_dim
             self.act_dim = act_dim
-            self.state_mlp = nn.Sequential(
-                nn.Linear(state_dim, d_model), nn.ReLU(),
-                nn.Linear(d_model, d_model), nn.ReLU(),
-            )
-            self.act_mlp = nn.Sequential(
-                nn.Linear(act_dim, d_model), nn.ReLU(),
-                nn.Linear(d_model, d_model),
-            )
+            self.layers = layers
+            self.state_mlp = _tower(state_dim, final_relu=True)
+            self.act_mlp = _tower(act_dim, final_relu=False)
             self.attn = nn.MultiheadAttention(d_model, heads, batch_first=True)
             self.norm = nn.LayerNorm(d_model)
             self.policy_head = nn.Linear(d_model, 1)
@@ -323,11 +331,16 @@ class PPOPolicy(Strategy):
         import torch
 
         payload = torch.load(path, map_location="cpu", weights_only=True)
-        in_dim = payload["state_dict"]["state_mlp.0.weight"].shape[1]
-        a_dim = payload["state_dict"]["act_mlp.0.weight"].shape[1]
+        sd = payload["state_dict"]
+        in_dim = sd["state_mlp.0.weight"].shape[1]
+        a_dim = sd["act_mlp.0.weight"].shape[1]
+        # Depth is read off the weights themselves, so a checkpoint never
+        # depends on its metadata being complete.
+        depth = sum(1 for k in sd
+                    if k.startswith("state_mlp.") and k.endswith(".weight"))
         net = build_net(
             payload.get("d_model", 192), payload.get("heads", 4),
-            state_dim=in_dim, act_dim=a_dim,
+            state_dim=in_dim, act_dim=a_dim, layers=depth,
         )
         net.load_state_dict(payload["state_dict"])
         return cls(net)
@@ -468,6 +481,12 @@ def _opponent_pool() -> List[Strategy]:
     exploiter = _load_snapshot_policy("big2/policies/ppo_exploiter.pt")
     if exploiter is not None:
         pool.append(exploiter)
+    # The strong testers, distilled (big2/humanlike.py): pass-heavy,
+    # card-conserving play no scripted or self-play opponent supplies —
+    # the exact style that has been beating the shipped models.
+    human = _load_snapshot_policy("big2/policies/humanlike.pt")
+    if human is not None:
+        pool.append(human)
     return pool
 
 
@@ -505,7 +524,8 @@ def rollout_games(args) -> bytes:
 
     torch.set_num_threads(1)
     payload = pickle.loads(state_bytes)
-    net = build_net(payload["d_model"], payload["heads"])
+    net = build_net(payload["d_model"], payload["heads"],
+                    layers=payload.get("layers", 2))
     net.load_state_dict(payload["state_dict"])
     net.eval()
     rng = random.Random(seed)
@@ -626,6 +646,7 @@ def train_ppo(
     belief_coef: float = 0.5,
     d_model: int = 192,
     heads: int = 4,
+    layers: int = 2,  # input-MLP depth; 2 is every shipped checkpoint
     seed: int = 0,
     out: str = DEFAULT_MODEL_PATH,
     resume: Optional[str] = None,
@@ -660,7 +681,7 @@ def train_ppo(
 
     torch.manual_seed(seed)
     torch.set_num_threads(2)
-    net = build_net(d_model, heads)
+    net = build_net(d_model, heads, layers=layers)
     best_probe = -1e9
     if resume:
         payload = torch.load(resume, map_location="cpu", weights_only=True)
@@ -737,7 +758,8 @@ def train_ppo(
 
     for it in range(1, iters + 1):
         blob = pickle.dumps(
-            {"state_dict": net.state_dict(), "d_model": d_model, "heads": heads}
+            {"state_dict": net.state_dict(), "d_model": d_model, "heads": heads,
+             "layers": layers}
         )
         per = games_per_iter // workers
         snaps = [] if exploit_target else _snapshot_paths()
@@ -830,7 +852,7 @@ def train_ppo(
             )
             _atomic_save(
                 {"state_dict": net.state_dict(), "d_model": d_model,
-                 "heads": heads},
+                 "heads": heads, "layers": layers},
                 slot,
             )
             if verbose:
@@ -896,7 +918,7 @@ def train_ppo(
                 bpath = os.path.join(snap_dir, f"breakout_{it}.pt")
                 _atomic_save(
                     {"state_dict": net.state_dict(), "d_model": d_model,
-                     "heads": heads},
+                     "heads": heads, "layers": layers},
                     bpath,
                 )
                 breakouts = sorted(
@@ -938,7 +960,7 @@ def train_ppo(
                         meta["note"] = note
                     _atomic_save(
                         {"state_dict": net.state_dict(), "d_model": d_model,
-                         "heads": heads, "meta": meta},
+                         "heads": heads, "layers": layers, "meta": meta},
                         out,
                     )
                     print(
@@ -959,6 +981,8 @@ def main() -> None:
     parser.add_argument("--selfplay-prob", type=float, default=0.5)
     parser.add_argument("--lr", type=float, default=3e-4)
     parser.add_argument("--d-model", type=int, default=192)
+    parser.add_argument("--layers", type=int, default=2,
+                        help="input-MLP depth (Linear layers per tower)")
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--out", default=DEFAULT_MODEL_PATH)
     parser.add_argument("--resume", default=None)
@@ -989,7 +1013,8 @@ def main() -> None:
     train_ppo(
         iters=args.iters, games_per_iter=args.games_per_iter,
         workers=args.workers, selfplay_prob=args.selfplay_prob, lr=args.lr,
-        d_model=args.d_model, seed=args.seed, out=args.out,
+        d_model=args.d_model, layers=args.layers, seed=args.seed,
+        out=args.out,
         resume=args.resume, probe_every_iters=args.probe_every_iters,
         games_offset=args.games_offset,
         snapshot_every_iters=args.snapshot_every_iters,

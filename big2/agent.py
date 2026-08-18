@@ -125,13 +125,20 @@ class IntegratedAgent(Strategy):
         use_search: bool = True,
         seed: int = 0,
         time_budget: float = TIME_BUDGET,
+        breadth: Optional[int] = None,
+        top_p: Optional[float] = None,
         name: Optional[str] = None,
     ):
         self.policy = policy
         self.time_budget = float(time_budget)
+        search_kw = {}
+        if breadth is not None:
+            search_kw["breadth"] = breadth
+        if top_p is not None:
+            search_kw["top_p"] = top_p
         self.searcher = PolicyValueISMCTS(
             policy, simulations=simulations, c_puct=c_puct, depth=depth,
-            seed=seed, time_budget=time_budget,
+            seed=seed, time_budget=time_budget, **search_kw,
         )
         self.solve_cards = solve_cards
         self.override_margin = override_margin
