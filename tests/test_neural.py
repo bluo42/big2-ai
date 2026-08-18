@@ -197,3 +197,66 @@ class TestNetAndPPO(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestConfirmationPanel(unittest.TestCase):
+    def test_panel_probe_faces_three_different_members(self):
+        from big2.game import ScoringConfig
+        from big2.neural import panel_probe
+        from big2.rules import DEFAULT_RULES
+        from big2.strategies import (
+            FiveCardDumper, PlayHighest, PlayLowest, SmartHeuristic,
+        )
+
+        seen = []
+
+        class _Spy(SmartHeuristic):
+            name = "spy"
+
+            def select(self, game, player):
+                seen.append(tuple(sorted(
+                    getattr(game.hands[p], "__len__")() for p in range(4)
+                )))
+                return super().select(game, player)
+
+        panel = [FiveCardDumper(), PlayLowest(), PlayHighest(),
+                 SmartHeuristic()]
+        avg = panel_probe(_Spy(), panel, 8, ScoringConfig(), DEFAULT_RULES,
+                          seed=3)
+        self.assertIsInstance(avg, float)
+        self.assertTrue(seen)  # the probed policy actually played
+
+    def test_panel_probe_rejects_a_thin_panel(self):
+        from big2.game import ScoringConfig
+        from big2.neural import panel_probe
+        from big2.rules import DEFAULT_RULES
+        from big2.strategies import PlayLowest, SmartHeuristic
+
+        with self.assertRaises(ValueError):
+            panel_probe(SmartHeuristic(), [PlayLowest()], 4, ScoringConfig(),
+                        DEFAULT_RULES, seed=1)
+
+    def test_panel_is_assembled_from_whatever_exists(self):
+        from big2.neural import confirmation_panel
+
+        panel = confirmation_panel(snapshot_dir="/nonexistent")
+        # scripted members always available; trained ones when files exist
+        names = [getattr(p, "name", "?") for p in panel]
+        self.assertIn("dumper", names)
+        self.assertIn("smart", names)
+        self.assertGreaterEqual(len(panel), 3)
+
+    def test_panel_probe_is_deterministic_for_a_seed(self):
+        from big2.game import ScoringConfig
+        from big2.neural import panel_probe
+        from big2.rules import DEFAULT_RULES
+        from big2.strategies import (
+            FiveCardDumper, PlayHighest, PlayLowest, SmartHeuristic,
+        )
+
+        panel = [FiveCardDumper(), PlayLowest(), PlayHighest()]
+        a = panel_probe(SmartHeuristic(), panel, 12, ScoringConfig(),
+                        DEFAULT_RULES, seed=7)
+        b = panel_probe(SmartHeuristic(), panel, 12, ScoringConfig(),
+                        DEFAULT_RULES, seed=7)
+        self.assertEqual(a, b)

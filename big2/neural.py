@@ -377,6 +377,83 @@ def probe_2v2(policy: Strategy, ref: Strategy, n_games: int,
     return total / n_games
 
 
+def confirmation_panel(
+    reference: Optional[str] = None,
+    snapshot_dir: str = "big2/policies/ppo_snapshots",
+) -> List[Strategy]:
+    """The field a candidate must actually beat.
+
+    Confirming against three copies of one model measures a single
+    matchup, not strength: a candidate can clear it by learning that
+    opponent's quirks while losing ground to everything else.  The panel
+    is the whole field instead — the live reference, the previous
+    champion lines, the scripted regulars from the training diet, the
+    CEM linear champion, the dedicated exploiter, and the most recent
+    frozen past-selves — and confirmation seats three *different*
+    members per game.
+    """
+    panel: List[Strategy] = []
+    seen = set()
+    for path in (reference, "big2/policies/ppo_attn_v11.pt",
+                 "big2/policies/ppo_attn.pt",
+                 "big2/policies/ppo_exploiter.pt"):
+        if not path or path in seen:
+            continue
+        seen.add(path)
+        p = _load_snapshot_policy(path)
+        if p is not None:
+            panel.append(p)
+    try:
+        panel.append(LinearPolicy.load("big2/policies/linear_cem.npz"))
+    except Exception:
+        pass
+    panel.append(FiveCardDumper())
+    panel.append(SmartHeuristic())
+    try:
+        snaps = sorted(
+            (os.path.join(snapshot_dir, f) for f in os.listdir(snapshot_dir)
+             if f.endswith(".pt")),
+            key=os.path.getmtime,
+        )[-3:]
+    except OSError:
+        snaps = []
+    for path in snaps:
+        p = _load_snapshot_policy(path)
+        if p is not None:
+            panel.append(p)
+    return panel
+
+
+def panel_probe(
+    policy: Strategy,
+    panel: Sequence[Strategy],
+    n_games: int,
+    scoring,
+    rules,
+    seed: int,
+) -> float:
+    """Mean score over games against three *different* panel members.
+
+    Seats rotate and the opponent triple is redrawn every game, so the
+    number measures strength against the field rather than against
+    whoever happened to be sitting there.
+    """
+    if len(panel) < 3:
+        raise ValueError("panel needs at least 3 members")
+    rng = random.Random(seed)
+    total = 0.0
+    for g in range(n_games):
+        seat = g % 4
+        opps = rng.sample(list(panel), 3)
+        seats = [policy if p == seat else opps.pop() for p in range(4)]
+        game = Big2Game(
+            scoring=scoring, rules=rules, num_players=4,
+            rng=random.Random(rng.randrange(2**31)),
+        )
+        total += game.play_out(seats)[seat]
+    return total / n_games
+
+
 def _opponent_pool() -> List[Strategy]:
     """Deliberately lean: the strongest scripted agent (dumper, per the
     current baseline table), the CEM linear champion, and — closing the
@@ -574,6 +651,8 @@ def train_ppo(
     #   new metric, so nothing worse ever overwrites it)
     num_players: int = 4,  # 2 runs the 1v1 curriculum: the same encoders
     #   and net, on the smaller game where credit assignment is cleanest
+    confirm_panel: bool = False,  # confirm against a mixed field (diet,
+    #   peers, past selves) instead of three copies of one reference
     note: Optional[str] = None,  # version label stored in saved meta
     verbose: bool = True,
 ):
@@ -645,6 +724,14 @@ def train_ppo(
     if exploit_target:
         # The exploitability probe: how much a dedicated adversary extracts.
         champs = [PPOPolicy.load(exploit_target) for _ in range(3)]
+
+    panel: List[Strategy] = []
+    if confirm_panel:
+        panel = confirmation_panel(probe_vs, snapshot_dir=snap_dir)
+        if verbose:
+            names = ", ".join(getattr(p, "name", "?") for p in panel)
+            print(f"[ppo] confirmation panel ({len(panel)}): {names}",
+                  flush=True)
 
     diet_best = -1e9  # high-water mark for the vs-diet probe series
 
@@ -823,11 +910,19 @@ def train_ppo(
                 # Two-stage gate: a 120-game probe is +-1 noisy, so a
                 # would-be best must confirm on an independent larger
                 # re-test; the confirmed number is what gets recorded.
-                opponents = champs[:3] if len(champs) == 3 else probe_baselines
-                confirmed = _probe(
-                    policy, opponents, confirm_games, ScoringConfig(),
-                    DEFAULT_RULES, seed=it + 7919,
-                )
+                if confirm_panel:
+                    confirmed = panel_probe(
+                        policy, panel, confirm_games, ScoringConfig(),
+                        DEFAULT_RULES, seed=it + 7919,
+                    )
+                else:
+                    opponents = (
+                        champs[:3] if len(champs) == 3 else probe_baselines
+                    )
+                    confirmed = _probe(
+                        policy, opponents, confirm_games, ScoringConfig(),
+                        DEFAULT_RULES, seed=it + 7919,
+                    )
                 net.train()
                 print(
                     f"[ppo] candidate {score:+.2f} -> confirmation "
@@ -885,6 +980,9 @@ def main() -> None:
                         help="explicit starting bar for the best-save gate")
     parser.add_argument("--num-players", type=int, default=4,
                         help="2 for the 1v1 curriculum, 4 for the real game")
+    parser.add_argument("--confirm-panel", action="store_true",
+                        help="confirm candidates against a mixed field of "
+                             "diet, peers and past selves")
     parser.add_argument("--note", default=None,
                         help="version label stored in the saved meta")
     args = parser.parse_args()
@@ -902,6 +1000,7 @@ def main() -> None:
         probe_vs=args.probe_vs,
         init_bar=args.init_bar,
         num_players=args.num_players,
+        confirm_panel=args.confirm_panel,
         note=args.note,
     )
 
