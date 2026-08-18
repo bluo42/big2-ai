@@ -68,8 +68,25 @@ class Store:
 
             self._pg = True
             self._url = url
-            self._connect = lambda: psycopg2.connect(url)
             self._ph = "%s"
+            # Sandboxed sessions have no direct outbound TCP — libpq
+            # hangs because it cannot use an HTTP proxy.  Try a direct
+            # connection first, then fall back to a CONNECT tunnel
+            # through the session proxy (big2/pgtunnel.py), which works
+            # wherever the egress policy allows the database host.
+            self._tunnel = None
+
+            def _open():
+                try:
+                    return psycopg2.connect(url, connect_timeout=10)
+                except psycopg2.OperationalError:
+                    from big2.pgtunnel import tunnel_dsn
+
+                    dsn, tun = tunnel_dsn(url)
+                    self._tunnel = tun
+                    return psycopg2.connect(dsn, connect_timeout=20)
+
+            self._connect = _open
         else:
             self._pg = False
             path = url or os.environ.get("BIG2_DB") or DEFAULT_SQLITE

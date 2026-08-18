@@ -145,6 +145,63 @@ class TestEndpoints(unittest.TestCase):
             finally:
                 store_mod._STORE = old
 
+class TestProxyTunnel(unittest.TestCase):
+    """The client-side piece libpq is missing: a CONNECT tunnel.
+
+    Verified end-to-end against an allowed host in this environment;
+    these cover the parts that need no network.
+    """
+
+    def test_dsn_keeps_the_real_host_for_tls_and_dials_the_tunnel(self):
+        from big2.pgtunnel import tunnel_dsn
+
+        url = ("postgresql://alice:secret@db.example.com:5432/appdb"
+               "?sslmode=require&channel_binding=require")
+        dsn, tun = tunnel_dsn(url)
+        try:
+            self.assertIn("host=db.example.com", dsn)   # SNI + cert target
+            self.assertIn("hostaddr=127.0.0.1", dsn)    # where bytes go
+            self.assertIn(f"port={tun.local_port}", dsn)
+            self.assertIn("dbname=appdb", dsn)
+            self.assertIn("user=alice", dsn)
+            self.assertIn("password=secret", dsn)
+            self.assertIn("sslmode=require", dsn)
+            # channel binding depends on the TLS endpoint: dropped rather
+            # than risking a SCRAM mismatch through the tunnel
+            self.assertNotIn("channel_binding", dsn)
+            self.assertNotEqual(tun.local_port, 0)
+        finally:
+            tun.close()
+
+    def test_proxy_address_is_read_from_the_environment(self):
+        import os
+
+        from big2.pgtunnel import proxy_address
+
+        old = os.environ.get("HTTPS_PROXY")
+        try:
+            os.environ["HTTPS_PROXY"] = "http://127.0.0.1:9999"
+            self.assertEqual(proxy_address(), ("127.0.0.1", 9999))
+        finally:
+            if old is None:
+                os.environ.pop("HTTPS_PROXY", None)
+            else:
+                os.environ["HTTPS_PROXY"] = old
+
+    def test_missing_proxy_is_reported_clearly(self):
+        import os
+
+        from big2.pgtunnel import ProxyTunnel
+
+        saved = {k: os.environ.pop(k) for k in
+                 ("HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy")
+                 if k in os.environ}
+        try:
+            with self.assertRaises(RuntimeError):
+                ProxyTunnel("db.example.com")
+        finally:
+            os.environ.update(saved)
+
 
 if __name__ == "__main__":
     unittest.main()
