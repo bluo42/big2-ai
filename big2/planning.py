@@ -107,15 +107,24 @@ class PlanContext:
         return self._boss_cache[key]
 
     def units_after(self, move: Optional[Combo]) -> int:
-        """Units left once ``move`` is played (greedy re-partition)."""
-        from big2.strategies import SmartHeuristic
+        """Turns still needed once ``move`` is played.
 
+        Re-partitioning per candidate move doubled the cost of encoding a
+        decision, so this walks the existing partition instead: units the
+        move consumes whole disappear, units it breaks into leave their
+        remainder as loose cards.  Exact when the move is a unit (the
+        common case) and a tight upper bound otherwise.
+        """
         if move is None:
             return len(self.units)
-        left = list(self.hand)
-        for c in move.cards:
-            left.remove(c)
-        return len(SmartHeuristic._partition(left)) if left else 0
+        played = set(move.cards)
+        left = 0
+        for u in self.units:
+            rest = [c for c in u.cards if c not in played]
+            if not rest:
+                continue                    # unit spent exactly
+            left += 1 if len(rest) == len(u) else len(rest)
+        return left
 
 
 def plan_state_features(ctx: PlanContext) -> np.ndarray:

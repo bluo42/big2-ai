@@ -45,6 +45,14 @@ from big2.cards import NUM_CARDS
 from big2.combos import Combo
 from big2.features import FEAT_DIM, DecisionContext, encode_sa
 from big2.game import Big2Game, ScoringConfig
+from big2.inference import OVERPLAY_DIM, overplay_features
+from big2.planning import (
+    PLAN_DIM,
+    PLAN_STATE_DIM,
+    PlanContext,
+    plan_features,
+    plan_state_features,
+)
 from big2.profiles import PROFILE_DIM, OpponentProfileBook
 from big2.rl import NUM_FEATURES as CEM_DIM
 from big2.rl import LinearPolicy, move_features as cem_move_features
@@ -58,10 +66,16 @@ SCORE_SCALE = 39.0
 # out AND this move is a cheap gift").
 DANGER_DIM = 14
 ACT_DIM_V1 = FEAT_DIM + CEM_DIM + 1  # v1.0 nets: v4 + CEM + champion advice
-ACT_DIM = ACT_DIM_V1 + DANGER_DIM
+ACT_DIM_V11 = ACT_DIM_V1 + DANGER_DIM
+# v2: planning block per move (is it answerable? what happens after?)
+# and, on the state side, the hand's run-out summary plus what each
+# opponent's own play has revealed about how they answer.
+ACT_DIM = ACT_DIM_V11 + PLAN_DIM
 BELIEF_SLOTS = 3 * NUM_CARDS  # per-opponent hand membership, seat order after me
 PROFILE_SLOTS = 3 * PROFILE_DIM  # cross-game opponent profiles, same order
-STATE_DIM = FEAT_DIM + PROFILE_SLOTS
+OVERPLAY_SLOTS = 3 * OVERPLAY_DIM
+STATE_DIM_V11 = FEAT_DIM + PROFILE_SLOTS
+STATE_DIM = STATE_DIM_V11 + PLAN_STATE_DIM + OVERPLAY_SLOTS
 
 
 def danger_features(game: Big2Game, player: int,
@@ -131,6 +145,7 @@ def encode_decision(
     seat_keys: Optional[Dict[int, object]] = None,
     include_profiles: bool = True,
     include_danger: bool = True,
+    include_plan: bool = True,
 ) -> Tuple[List[Optional[Combo]], np.ndarray, np.ndarray]:
     """(options, state_vec, action_matrix) for one decision.
 
@@ -138,7 +153,9 @@ def encode_decision(
     profiles (zeros when no ``book``/``seat_keys`` are supplied — e.g.
     at deploy time or in probes).  ``include_danger`` appends the v1.1
     endgame-danger block to every action row; v1.0 nets have a narrower
-    action input and set it False."""
+    action input and set it False.  ``include_plan`` adds the v2
+    planning block (per move) and the run-out/opponent-read summary (on
+    the state), which older nets likewise skip."""
     options: List[Optional[Combo]] = list(game.legal_moves(player))
     if game.can_pass():
         options.append(None)
@@ -155,10 +172,22 @@ def encode_decision(
                         book.features(key)
                     )
         state = np.concatenate([state, prof])
-    units_keys = {
-        frozenset(u.cards)
-        for u in SmartHeuristic._partition(game.hands[player])
-    }
+    pctx: Optional[PlanContext] = None
+    if include_plan:
+        pctx = PlanContext(game, player)
+        reads = overplay_features(game, player)
+        others = [p for p in range(game.num_players) if p != player][:3]
+        opp = np.zeros(OVERPLAY_SLOTS, dtype=np.float32)
+        for j, p in enumerate(others):
+            opp[j * OVERPLAY_DIM : (j + 1) * OVERPLAY_DIM] = reads[p]
+        state = np.concatenate([state, plan_state_features(pctx), opp])
+    # The plan context already partitioned the hand; reuse it rather than
+    # paying for a second identical partition per decision.
+    units = (
+        pctx.units if pctx is not None
+        else SmartHeuristic._partition(game.hands[player])
+    )
+    units_keys = {frozenset(u.cards) for u in units}
     champ_w = _ChampionAdvice.weights()
     rows = []
     for m in options:
@@ -169,6 +198,8 @@ def encode_decision(
                  np.array([advice], dtype=np.float32)]
         if include_danger:
             parts.append(danger_features(game, player, m))
+        if pctx is not None:
+            parts.append(plan_features(pctx, m))
         rows.append(np.concatenate(parts).astype(np.float32))
     return options, state, np.stack(rows)
 
@@ -251,8 +282,11 @@ class PPOPolicy(Strategy):
     def __init__(self, net, d_model: int = 192):
         self.net = net
         self.net.eval()
-        self.uses_profiles = getattr(net, "state_dim", STATE_DIM) != FEAT_DIM
-        self.uses_danger = getattr(net, "act_dim", ACT_DIM) >= ACT_DIM
+        sdim = getattr(net, "state_dim", STATE_DIM)
+        adim = getattr(net, "act_dim", ACT_DIM)
+        self.uses_profiles = sdim != FEAT_DIM
+        self.uses_danger = adim >= ACT_DIM_V11
+        self.uses_plan = adim >= ACT_DIM and sdim >= STATE_DIM
         self.book: Optional[OpponentProfileBook] = None
         self.seat_keys: Optional[Dict[int, object]] = None
 
@@ -265,6 +299,7 @@ class PPOPolicy(Strategy):
             game, player, book=self.book, seat_keys=self.seat_keys,
             include_profiles=self.uses_profiles,
             include_danger=self.uses_danger,
+            include_plan=self.uses_plan,
         )
         with torch.no_grad():
             logits, _, _ = self.net(
@@ -388,7 +423,7 @@ def _load_snapshot_policy(path: str) -> Optional["PPOPolicy"]:
 def rollout_games(args) -> bytes:
     """Worker: play games with the given weights, return episode batch."""
     (state_bytes, n_games, seed, selfplay_prob, snapshot_paths,
-     past_self_prob, exploit_path) = args
+     past_self_prob, exploit_path, num_players) = args
     import torch
 
     torch.set_num_threads(1)
@@ -414,11 +449,11 @@ def rollout_games(args) -> bytes:
     for _ in range(n_games):
         selfplay = rng.random() < selfplay_prob
         if selfplay:
-            ppo_seats = set(range(4))
+            ppo_seats = set(range(num_players))
         else:
-            ppo_seats = {rng.randrange(4)}
+            ppo_seats = {rng.randrange(num_players)}
         opponents = {}
-        for p in range(4):
+        for p in range(num_players):
             if p in ppo_seats:
                 continue
             # League-style: previous generations sit at the table too.
@@ -428,7 +463,8 @@ def rollout_games(args) -> bytes:
                 opponents[p] = rng.choice(pool)
         seat_keys = {p: o.name for p, o in opponents.items()}
         game = Big2Game(
-            scoring=ScoringConfig(), rules=DEFAULT_RULES, num_players=4,
+            scoring=ScoringConfig(), rules=DEFAULT_RULES,
+            num_players=num_players,
             rng=random.Random(rng.randrange(2**31)),
         )
         trajs: Dict[int, Dict[str, list]] = {
@@ -442,7 +478,9 @@ def rollout_games(args) -> bytes:
                 game.step(opponents[p].select(game, p))
                 continue
             options, state, acts = encode_decision(
-                game, p, book=_PROFILE_BOOK, seat_keys=seat_keys
+                game, p, book=_PROFILE_BOOK, seat_keys=seat_keys,
+                include_danger=net.act_dim >= ACT_DIM_V11,
+                include_plan=net.act_dim >= ACT_DIM,
             )
             if len(options) == 1:
                 game.step(options[0])
@@ -534,6 +572,8 @@ def train_ppo(
     init_bar: Optional[float] = None,  # explicit starting bar for the
     #   best-save gate (e.g. the current out-file's known score under a
     #   new metric, so nothing worse ever overwrites it)
+    num_players: int = 4,  # 2 runs the 1v1 curriculum: the same encoders
+    #   and net, on the smaller game where credit assignment is cleanest
     note: Optional[str] = None,  # version label stored in saved meta
     verbose: bool = True,
 ):
@@ -617,7 +657,7 @@ def train_ppo(
         results = pool.map(
             rollout_games,
             [(blob, per, rng.randrange(2**31), selfplay_prob, snaps,
-              past_self_prob, exploit_target)
+              past_self_prob, exploit_target, num_players)
              for _ in range(workers)],
         )
         episodes = [e for r in results for e in pickle.loads(r)]
@@ -843,6 +883,8 @@ def main() -> None:
                              "checkpoint instead of the champions trio")
     parser.add_argument("--init-bar", type=float, default=None,
                         help="explicit starting bar for the best-save gate")
+    parser.add_argument("--num-players", type=int, default=4,
+                        help="2 for the 1v1 curriculum, 4 for the real game")
     parser.add_argument("--note", default=None,
                         help="version label stored in the saved meta")
     args = parser.parse_args()
@@ -859,6 +901,7 @@ def main() -> None:
         fresh_bar=args.fresh_bar,
         probe_vs=args.probe_vs,
         init_bar=args.init_bar,
+        num_players=args.num_players,
         note=args.note,
     )
 

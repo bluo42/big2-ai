@@ -24,9 +24,17 @@ class TestFeatureAssembly(unittest.TestCase):
         self.assertEqual(state.shape, (STATE_DIM,))
         self.assertEqual(acts.shape, (len(options), ACT_DIM))
         options2, state2, _ = encode_decision(
-            game, game.turn, include_profiles=False
+            game, game.turn, include_profiles=False, include_plan=False
         )
         self.assertEqual(state2.shape, (FEAT_DIM,))
+        # v1.1 nets: state carries profiles but no plan/opponent-read block
+        _, state11, acts11 = encode_decision(
+            game, game.turn, include_plan=False
+        )
+        from big2.neural import ACT_DIM_V11, STATE_DIM_V11
+
+        self.assertEqual(state11.shape, (STATE_DIM_V11,))
+        self.assertEqual(acts11.shape[1], ACT_DIM_V11)
         self.assertGreaterEqual(len(options), 1)
 
     def test_profile_book_ema_weights_recent_without_forgetting(self):
@@ -93,10 +101,16 @@ class TestFeatureAssembly(unittest.TestCase):
         from big2.neural import ACT_DIM_V1
 
         _, _, acts = encode_decision(game, p)
-        _, _, acts_v1 = encode_decision(game, p, include_danger=False)
+        _, _, acts_v1 = encode_decision(
+            game, p, include_danger=False, include_plan=False
+        )
+        _, _, acts_v11 = encode_decision(game, p, include_plan=False)
         self.assertEqual(acts.shape[1], ACT_DIM)
         self.assertEqual(acts_v1.shape[1], ACT_DIM_V1)
-        np.testing.assert_allclose(acts[:, :ACT_DIM_V1], acts_v1)
+        # each version is a strict prefix of the next: old checkpoints
+        # widen with zero columns and keep their exact behaviour
+        np.testing.assert_allclose(acts_v11[:, :ACT_DIM_V1], acts_v1)
+        np.testing.assert_allclose(acts[:, :acts_v11.shape[1]], acts_v11)
 
 
 @unittest.skipUnless(HAS_TORCH, "torch not installed")

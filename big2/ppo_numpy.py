@@ -104,13 +104,14 @@ class NumpyPPOPolicy:
 
     def select(self, game: Big2Game, player: int) -> Optional[Combo]:
         from big2.features import FEAT_DIM
-        from big2.neural import ACT_DIM
+        from big2.neural import ACT_DIM, ACT_DIM_V11, STATE_DIM
 
         in_dim = self.p["state_mlp.0.weight"].shape[1]
         a_dim = self.p["act_mlp.0.weight"].shape[1]
         options, state, acts = encode_decision(
             game, player, include_profiles=(in_dim != FEAT_DIM),
-            include_danger=(a_dim >= ACT_DIM),
+            include_danger=(a_dim >= ACT_DIM_V11),
+            include_plan=(a_dim >= ACT_DIM and in_dim >= STATE_DIM),
         )
         if len(options) == 1:
             return options[0]
