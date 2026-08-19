@@ -146,6 +146,15 @@
   #handArea { background: var(--panel); border: 1px solid var(--line); border-radius: 14px; padding: 14px; }
   #handControls { display: flex; align-items: center; gap: 8px; margin-bottom: 12px; flex-wrap: wrap; }
   #handControls .spacer { flex: 1; }
+  /* Pass confirmation: a small button that appears directly above Pass
+     instead of a browser dialog. */
+  #passWrap { position: relative; display: inline-flex; }
+  #passConfirm {
+    position: absolute; bottom: calc(100% + 6px); left: 50%;
+    transform: translateX(-50%); padding: 4px 12px; font-size: .78rem;
+    background: var(--danger); color: #fff; border-color: var(--danger);
+    white-space: nowrap; z-index: 5;
+  }
   #hand { display: flex; flex-wrap: wrap; gap: 0; padding: 6px 4px 2px; min-height: 96px; }
 
   /* ---------- cards ---------- */
@@ -347,7 +356,10 @@
         <span class="spacer"></span>
         <button id="hintBtn" class="hidden">Hint</button>
         <button id="beliefsBtn" class="hidden">Beliefs</button>
-        <button id="passBtn" class="warn">Pass</button>
+        <span id="passWrap">
+          <button id="passConfirm" class="warn hidden">Sure?</button>
+          <button id="passBtn" class="warn">Pass</button>
+        </span>
         <button id="playBtn" class="good">Play</button>
       </div>
       <div id="hand"></div>
@@ -1330,17 +1342,38 @@ $("playBtn").addEventListener("click", async () => {
   if (state) { selected.clear(); await applyState(state); }
 });
 
-$("passBtn").addEventListener("click", async () => {
-  if (busy) return;
-  // Guard the accidental fold: passing with a legal play in hand gets
-  // one small are-you-sure.
-  if (S && S.legal_moves && S.legal_moves.length > 0 &&
-      !confirm("You have a playable move — pass anyway?")) return;
+async function doPass() {
   // Passing rides the play endpoint ("pass" is a reserved word in Python,
   // so it can't be a Vercel function filename).
   const state = await post("/api/play", { state: FS, pass: true });
   if (state) { selected.clear(); await applyState(state); }
+}
+
+function hidePassConfirm() { $("passConfirm").classList.add("hidden"); }
+
+$("passBtn").addEventListener("click", async () => {
+  if (busy) return;
+  // Guard the accidental fold: passing with a legal play in hand asks
+  // once, via a small button above Pass rather than a browser dialog.
+  if (S && S.legal_moves && S.legal_moves.length > 0 &&
+      $("passConfirm").classList.contains("hidden")) {
+    $("passConfirm").classList.remove("hidden");
+    return;
+  }
+  hidePassConfirm();
+  await doPass();
 });
+
+$("passConfirm").addEventListener("click", async () => {
+  hidePassConfirm();
+  if (busy) return;
+  await doPass();
+});
+
+// Any other click (or picking a card) dismisses the prompt.
+document.addEventListener("click", (e) => {
+  if (!$("passWrap").contains(e.target)) hidePassConfirm();
+}, true);
 
 $("sortSeg").addEventListener("click", (e) => {
   const btn = e.target.closest("button");
