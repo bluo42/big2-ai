@@ -382,9 +382,29 @@ def view_payload(game: Big2Game, ai_kinds: Dict[int, Optional[str]]) -> Dict:
     }
 
 
+# Built agents, reused across requests.  Constructing a chain bot means
+# reading its weights off disk and standing up a search agent, and on
+# the first call the belief machinery imports lazily -- all of which was
+# being paid INSIDE the move's time budget, starving the search (~8
+# simulations instead of ~30).  Policies are stateless with respect to
+# the position, so a warm one is safe to share.
+_AI_CACHE: Dict[Tuple[str, Optional[int]], Strategy] = {}
+_AI_CACHE_CAP = 24
+
+
+def get_ai(name: str, seed: Optional[int] = None) -> Strategy:
+    key = ((name or "smart").lower(), seed)
+    hit = _AI_CACHE.get(key)
+    if hit is None:
+        if len(_AI_CACHE) >= _AI_CACHE_CAP:
+            _AI_CACHE.clear()
+        hit = _AI_CACHE[key] = make_ai(name, seed=seed)
+    return hit
+
+
 def _run_ai_turns(game: Big2Game, ai_kinds: Dict[int, Optional[str]]) -> None:
     policies = {
-        seat: make_ai(kind, seed=seat)
+        seat: get_ai(kind, seed=seat)
         for seat, kind in ai_kinds.items()
         if kind is not None
     }
@@ -656,7 +676,7 @@ def analyze(body: Dict) -> Dict:
     if game.can_pass():
         options.append(None)
 
-    agent = make_ai(kind, seed=0)
+    agent = get_ai(kind, seed=0)
     policy = getattr(agent, "policy", agent)
 
     # Policy preferences over the candidate set.
