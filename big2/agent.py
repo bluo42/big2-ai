@@ -47,7 +47,13 @@ import numpy as np
 from big2.combos import Combo
 from big2.endgame import MoveKey, move_key, remaining_cards
 from big2.game import Big2Game
-from big2.ismcts_pv import TIME_BUDGET, PolicyValueISMCTS, SearchResult
+from big2.ismcts_pv import (
+    PRIOR_LAMBDA_POINTS,
+    TIME_BUDGET,
+    PolicyValueISMCTS,
+    SearchResult,
+    pick_with_prior,
+)
 from big2.strategies import Strategy
 
 # Cards left at which lines can be verified instead of estimated.
@@ -156,6 +162,19 @@ class IntegratedAgent(Strategy):
 
     # ------------------------------------------------------------------
 
+    def _prior(self, game: Big2Game, player: int) -> Dict[MoveKey, float]:
+        """The policy's distribution over this position's moves."""
+        if not hasattr(self.policy, "option_scores"):
+            return {}
+        try:
+            options, scores = self.policy.option_scores(game, player)
+        except Exception:
+            return {}
+        z = np.asarray(scores, dtype=np.float64)
+        z = np.exp(z - z.max())
+        z = z / max(z.sum(), 1e-9)
+        return {move_key(m): float(p) for m, p in zip(options, z)}
+
     def _solver_decision(
         self, game: Big2Game, player: int, options: Sequence[Optional[Combo]]
     ) -> Optional[Decision]:
@@ -193,7 +212,13 @@ class IntegratedAgent(Strategy):
         )
         if not values or agreement < 0.6:
             return None      # the deals disagree: not actually determined
-        best = max(values, key=values.get)
+        # Exactly-tied lines are the rule, not the exception, in a
+        # decided endgame: every move can be worth the same under
+        # max^n.  The solver has nothing left to say there, so the
+        # trained prior -- which learned against the real field, not
+        # against optimal play -- picks among them.
+        best = pick_with_prior(values, self._prior(game, player),
+                               PRIOR_LAMBDA_POINTS)
         return Decision(best, "solver", values=values, cards_left=left,
                         worlds=len(worlds), exact=True,
                         elapsed=time.monotonic() - started)

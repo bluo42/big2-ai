@@ -82,6 +82,36 @@ from big2.strategies import Strategy
 SCORE_SCALE = 39.0
 SOLVE_BELOW = 12          # leaves this small are solved, not estimated
 MAX_ROLLOUT_STEPS = 400
+GREEDY_REPLIES_BELOW = 20  # in-tree opponents stop sampling this late
+
+# Tie-breaking (2026-08-19).  Measured values -- PIMC expectations and
+# search Q -- routinely tie outright: in a lost endgame every line is
+# worth the same, and with few simulations several moves share a visit
+# count.  Plain max() then falls back on dict order, which is
+# move-generation order, which prefers the LOWEST card: the worst
+# possible arbitrary rule.  Instead score each candidate as
+#
+#     value + lambda * log pi(a)
+#
+# so the trained prior decides ties and near-ties, and nothing else:
+# lambda is set well below the value differences that matter, in each
+# site's own units (solver EVs are game points, search Q is normalized
+# to +-1).  This is the PUCT prior term applied at the root.
+PRIOR_LAMBDA_POINTS = 0.10   # solver EVs, in points/game
+PRIOR_LAMBDA_Q = 0.02        # search values, normalized
+
+
+def pick_with_prior(values: Dict, prior: Optional[Dict], lam: float):
+    """Argmax of ``values``, ties broken by the policy prior."""
+    if not values:
+        return None
+    if not prior:
+        return max(values, key=values.get)
+    floor = 1e-6
+    return max(
+        values,
+        key=lambda k: values[k] + lam * math.log(max(prior.get(k, 0.0), floor)),
+    )
 
 # Wall-clock ceiling for one decision.  Deliberately modest: the search
 # runs inside self-play as well as inside the web app, and a budget that
@@ -258,6 +288,16 @@ class PolicyValueISMCTS:
             ((sum(others) / max(1, len(others))) - mine) / 13.0, -1.0, 1.0
         )), False
 
+    def _greedy_below(self, world: Big2Game) -> bool:
+        """Near the end, in-tree replies go greedy.
+
+        Sampling opponents keeps early determinizations honest, but in
+        the endgame it only adds variance to values that are about to
+        be decided exactly -- and noisy values are what produce the
+        spurious ties this module now breaks with the prior.
+        """
+        return remaining_cards(world) < GREEDY_REPLIES_BELOW
+
     def _play_forward(self, world: Big2Game, player: int, plies: int) -> None:
         """Play on: we answer greedily, the opponents are sampled.
 
@@ -287,7 +327,8 @@ class PolicyValueISMCTS:
             if steps >= plies and world.turn == player:
                 return
             seat = world.turn
-            move = (self.policy.select(world, seat) if seat == player
+            move = (self.policy.select(world, seat)
+                    if seat == player or self._greedy_below(world)
                     else self._sampled_move(world, seat))
             world.step(move)
             steps += 1
@@ -347,7 +388,8 @@ class PolicyValueISMCTS:
                                 elapsed=time.monotonic() - started,
                                 worlds=len(worlds))
         n_worlds = sum(1 for _, w in worlds if w > 0.0)
-        best = max(values, key=values.get)
+        best = pick_with_prior(values, dict(zip(keys, prior)),
+                               PRIOR_LAMBDA_POINTS)
         return SearchResult(
             move=best,
             policy_move=policy_move,
@@ -451,9 +493,16 @@ class PolicyValueISMCTS:
         values = {keys[i]: (w[i] / n[i] if n[i] else 0.0)
                   for i in range(len(options))}
         visits = {keys[i]: n[i] for i in range(len(options))}
-        # Robust choice: most-visited, ties broken by value.
-        best = max(range(len(options)),
-                   key=lambda i: (n[i], w[i] / n[i] if n[i] else -9.9))
+        # Robust choice: most-visited, then value, then the prior --
+        # never move-generation order.
+        best = max(
+            range(len(options)),
+            key=lambda i: (
+                n[i],
+                (w[i] / n[i] if n[i] else -9.9)
+                + PRIOR_LAMBDA_Q * math.log(max(float(prior[i]), 1e-6)),
+            ),
+        )
         return SearchResult(
             move=keys[best],
             policy_move=policy_move,
