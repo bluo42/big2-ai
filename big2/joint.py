@@ -120,7 +120,8 @@ def _build(payload: Dict, oracle: bool = False):
 
 
 def _joint_worker(args):
-    (blobs, games, seed, sims, budget, depth, mix_below) = args
+    (blobs, games, seed, sims, budget, depth, mix_below,
+     hb_path, hb_every) = args
     import torch
 
     from big2.agent import IntegratedAgent
@@ -147,7 +148,34 @@ def _joint_worker(args):
 
     episodes: Dict[str, List[Dict]] = {name: [] for name in blobs}
     names = list(blobs)
-    for _ in range(games):
+    # Heartbeat: pool.map is a barrier, so without this the run is a
+    # 12-hour silence in which "working" and "hung" look identical.
+    # Each worker appends a small JSON line; the reader sums across
+    # workers.  Appends of a short line are atomic enough on Windows
+    # for a progress file, and a failed write must never kill a run.
+    hb_scores: Dict[str, float] = {n: 0.0 for n in names}
+    hb_wins: Dict[str, int] = {n: 0 for n in names}
+    hb_searched = hb_decisions = 0
+    t_start = time.time()
+
+    def beat(done: int) -> None:
+        if not hb_path:
+            return
+        try:
+            with open(hb_path, "a", encoding="utf-8") as f:
+                f.write(json.dumps({
+                    "pid": os.getpid(), "games": done,
+                    "elapsed": round(time.time() - t_start, 1),
+                    "score": {n: round(v / max(1, done), 3)
+                              for n, v in hb_scores.items()},
+                    "wins": dict(hb_wins),
+                    "searched_frac": round(
+                        hb_searched / max(1, hb_decisions), 3),
+                }) + "\n")
+        except OSError:
+            pass
+
+    for g_i in range(games):
         seating = names[:]
         rng.shuffle(seating)
         game = Big2Game(scoring=ScoringConfig(), rules=DEFAULT_RULES,
@@ -219,12 +247,19 @@ def _joint_worker(args):
             t["belief"].append(belief_target(game, p))
             t["phi"].append(potential(game, p))
             t["visits"].append(visit_target)
+            hb_decisions += 1
+            hb_searched += int(visit_target is not None)
             game.step(options[idx])
 
         for s, t in trajs.items():
+            hb_scores[seating[s]] += game.scores[s]
+            hb_wins[seating[s]] += int(game.winner == s)
             if t["state"]:
                 episodes[seating[s]].append(
                     {**t, "score": game.scores[s] / SCORE_SCALE})
+        if hb_every and (g_i + 1) % hb_every == 0:
+            beat(g_i + 1)
+    beat(games)
     return pickle.dumps(episodes)
 
 
@@ -402,6 +437,8 @@ def train_joint(
     probe_games: int = 300,
     rollback_bar: float = 1.0,
     oracle: bool = True,
+    heartbeat: int = 250,
+    heartbeat_path: str = os.path.join(HERE, "..", "joint_heartbeat.jsonl"),
     progress_path: str = os.path.join(HERE, "..", "joint_progress.jsonl"),
 ) -> None:
     import torch
@@ -420,6 +457,8 @@ def train_joint(
     ctx = mp.get_context("spawn")
     for batch in range(batches):
         t0 = time.time()
+        if heartbeat_path:
+            open(heartbeat_path, "w", encoding="utf-8").close()  # fresh
         blobs = {}
         for name, net in nets.items():
             p = payloads[name]
@@ -434,10 +473,13 @@ def train_joint(
             })
         per = max(1, games // workers)
         rng = random.Random(batch * 7919 + 13)
+        # Aim the per-worker cadence so the AGGREGATE beat lands about
+        # every `heartbeat` games across the pool.
+        hb_every = max(1, heartbeat // max(1, workers))
         with ctx.Pool(workers) as pool:
             results = pool.map(_joint_worker, [
                 (blobs, per, rng.randrange(2 ** 31), simulations,
-                 time_budget, depth, mix_below)
+                 time_budget, depth, mix_below, heartbeat_path, hb_every)
                 for _ in range(workers)
             ])
         episodes: Dict[str, List[Dict]] = {name: [] for name in nets}
@@ -487,6 +529,52 @@ def train_joint(
             f.write(json.dumps(row) + "\n")
 
 
+def read_heartbeat(path: str = os.path.join(HERE, "..",
+                                            "joint_heartbeat.jsonl"),
+                   total: Optional[int] = None) -> Dict:
+    """Aggregate the workers' latest beats into one progress view."""
+    latest: Dict[int, Dict] = {}
+    try:
+        with open(path, encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    row = json.loads(line)
+                except ValueError:
+                    continue            # a torn append: skip, never crash
+                latest[row["pid"]] = row
+    except OSError:
+        return {"workers": 0, "games": 0}
+    if not latest:
+        return {"workers": 0, "games": 0}
+    games = sum(r["games"] for r in latest.values())
+    score: Dict[str, float] = {}
+    wins: Dict[str, int] = {}
+    for r in latest.values():
+        for n, v in r["score"].items():
+            score[n] = score.get(n, 0.0) + v * r["games"]
+        for n, v in r.get("wins", {}).items():
+            wins[n] = wins.get(n, 0) + v
+    rate = games / max(1e-9, max(r["elapsed"] for r in latest.values()))
+    out = {
+        "workers": len(latest), "games": games,
+        "games_per_min": round(rate * 60, 1),
+        "score": {n: round(v / max(1, games), 3) for n, v in score.items()},
+        "wins": {n: round(100.0 * v / max(1, games), 1)
+                 for n, v in wins.items()},
+        "searched_frac": round(
+            sum(r.get("searched_frac", 0.0) for r in latest.values())
+            / len(latest), 3),
+    }
+    if total:
+        out["pct"] = round(100.0 * games / total, 1)
+        remain = max(0, total - games) / max(1e-9, rate)
+        out["eta_hours"] = round(remain / 3600, 2)
+    return out
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--games", type=int, default=5000)
@@ -498,7 +586,16 @@ def main() -> None:
     ap.add_argument("--probe-games", type=int, default=300)
     ap.add_argument("--pilot", action="store_true",
                     help="tiny calibration batch: measure s/game, no save")
+    ap.add_argument("--heartbeat", type=int, default=250,
+                    help="aggregate games between progress beats")
+    ap.add_argument("--status", type=int, default=0, metavar="TOTAL",
+                    help="print the live heartbeat for a run of TOTAL "
+                         "games and exit")
     args = ap.parse_args()
+    if args.status:
+        st = read_heartbeat(total=args.status)
+        print(json.dumps(st, indent=1))
+        return
     if args.pilot:
         train_joint(games=24, batches=1, workers=args.workers,
                     simulations=args.sims, time_budget=args.budget,

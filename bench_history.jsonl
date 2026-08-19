@@ -1,0 +1,1 @@
+{"label": "pre-joint baseline", "games": 600, "table": {"v2_patient": 0.683, "v2_self_trained": 0.343, "v2_adversarial": -0.493, "v2_human_trained": -0.533}, "diet": {"v2_patient": 0.7, "v2_adversarial": 1.305, "v2_self_trained": 0.948, "v2_human_trained": 0.788}}
