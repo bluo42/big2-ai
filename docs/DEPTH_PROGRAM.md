@@ -151,6 +151,55 @@ the *average* move is far cheaper than the cap; a pilot run calibrates
 true throughput before the first 5k batch is scheduled, and batch size
 is honest about wall-clock rather than aspirational.
 
+## Addendum: what the Suphx oracle does and does not buy us
+
+Suphx (arXiv:2003.13590) trains an *oracle agent* on perfect
+information — including the other players' private tiles — then anneals
+it into a normal agent by dropping the perfect features out:
+
+> L(θ) = E[ π_θ(a | x_n(s), δ_t x_o(s)) / π_θ′(...) · A(...) ]
+
+where δ_t is a Bernoulli dropout matrix with P(δ_t = 1) = γ_t, and γ_t
+decays from 1 to 0.  The paper is explicit that the obvious shortcut
+fails first: *"simple knowledge distillation does not work well"* —
+the oracle is too strong for a limited-information student to mimic.
+
+**Tested here for distribution modelling, and it does not pay.**  Our
+belief head is already oracle-supervised (``belief_target`` is the true
+opponent hands), so the tempting move is to let it drive the search's
+determinizations.  Measured on real positions from the recorded human
+games (≥16 cards left, 106k card-player pairs), per-card log-loss:
+
+| model                     | log-loss | vs analytic |
+|---------------------------|---------:|------------:|
+| analytic (hypergeometric + fitted play factors) | 0.6149 | — |
+| belief head               | 0.6465 | **−5.1%** |
+| geometric blend           | 0.6233 | −1.4% |
+
+It is not a calibration artifact: ranking power is worse too (AUC
+0.571 against the analytic map's 0.614), and Platt scaling — which
+shrinks its logits by 0.42×, confirming gross overconfidence — still
+lands at 0.628.  The head is a useful auxiliary task for representation
+learning; it is *not* a density model, and feeding it to the
+determinizer would make search worlds worse.  Hand-fitted factors
+(workstream 2) stay the distribution channel.
+
+**Where the oracle does pay: the critic.**  The measured bottleneck is
+not the policy's information, it is the *baseline's* — the value head
+cannot tell early positions apart (corr 0.41) largely because it cannot
+see the hands.  A baseline that does not depend on the action leaves
+the policy gradient unbiased, so a privileged critic V(s, true hands)
+is free variance reduction (CTDE; Suphx applies the same privilege to
+the policy instead).  ``build_net(oracle_dim=...)`` adds exactly that:
+a second value head that also reads the 156-dim true-hands vector,
+used only to compute advantages during training.  The ordinary value
+head — the one inference and the search's leaves use — is unchanged
+and bit-identical, and ``oracle_dim=0`` (the default) leaves every
+existing checkpoint byte-compatible.  The privileged critic can also
+serve as a lower-variance regression target for the ordinary head,
+which is oracle distillation on a scalar rather than on a policy: the
+tractable half of Suphx's idea.
+
 ## Order of execution
 1. this document; 2. v2_patient (AWR); 3. belief factors;
 4. shaping Φ (+ search leaf bonus); 5. distillation fix + depth;

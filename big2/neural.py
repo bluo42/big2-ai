@@ -249,7 +249,8 @@ def belief_target(game: Big2Game, player: int) -> np.ndarray:
 
 
 def build_net(d_model: int = 192, heads: int = 4, state_dim: int = STATE_DIM,
-              act_dim: int = ACT_DIM, layers: int = 2, attn_blocks: int = 1):
+              act_dim: int = ACT_DIM, layers: int = 2, attn_blocks: int = 1,
+              oracle_dim: int = 0):
     """``layers`` counts Linear layers in each input MLP (2 = the
     original shape every shipped checkpoint has; 3 adds one d->d block
     to both towers).  Depth and width (``d_model``) are the two axes of
@@ -261,7 +262,18 @@ def build_net(d_model: int = 192, heads: int = 4, state_dim: int = STATE_DIM,
     is zero-initialized, so a 1-block checkpoint warm-starts into a
     2-block net functionally unchanged and gradients open the new block
     up from there.  Loaders detect the block from the state_dict itself
-    (``attn2.*`` keys), never from metadata."""
+    (``attn2.*`` keys), never from metadata.
+
+    ``oracle_dim`` > 0 adds a *privileged critic*: a second value head
+    that also sees the true opponent hands (the 156-dim vector
+    ``belief_target`` builds).  It exists only during training.  A
+    baseline that does not depend on the action leaves the policy
+    gradient unbiased, so a privileged critic is pure variance
+    reduction (the CTDE pattern; Suphx's oracle guiding is the same
+    idea applied to the policy instead).  The ordinary value head
+    still feeds inference and the search's leaves, so deployment is
+    unchanged; the default 0 keeps every existing checkpoint
+    byte-compatible."""
     import torch
     import torch.nn as nn
 
@@ -298,7 +310,51 @@ def build_net(d_model: int = 192, heads: int = 4, state_dim: int = STATE_DIM,
                 nn.Linear(2 * d_model, d_model), nn.ReLU(),
                 nn.Linear(d_model, 1),
             )
+            self.oracle_dim = oracle_dim
+            if oracle_dim:
+                self.oracle_mlp = nn.Sequential(
+                    nn.Linear(oracle_dim, d_model), nn.ReLU(),
+                )
+                self.oracle_value_head = nn.Sequential(
+                    nn.Linear(3 * d_model, d_model), nn.ReLU(),
+                    nn.Linear(d_model, 1),
+                )
             self.belief_head = nn.Linear(d_model, BELIEF_SLOTS)
+
+        def oracle_value(self, state, acts, mask, oracle):
+            """Privileged critic: V(s, true opponent hands).
+
+            Training only -- never consulted at inference, so the
+            policy and the search's leaves stay honest.  Shares the
+            trunk with the ordinary heads, so the extra information
+            enters exactly one place: the baseline.
+            """
+            s, h, _logits, pooled = self._trunk(state, acts, mask)
+            o = self.oracle_mlp(oracle)
+            return self.oracle_value_head(
+                torch.cat([s, pooled, o], dim=-1)
+            ).squeeze(-1)
+
+        def _trunk(self, state, acts, mask):
+            s = self.state_mlp(state)
+            h = self.act_mlp(acts) + s.unsqueeze(1)
+            attn_out, _ = self.attn(
+                h, h, h, key_padding_mask=~mask, need_weights=False
+            )
+            h = self.norm(h + attn_out)
+            if self.attn_blocks >= 2:
+                n2h = self.norm2(h)
+                a2, _ = self.attn2(
+                    n2h, n2h, n2h, key_padding_mask=~mask,
+                    need_weights=False,
+                )
+                h = h + a2
+            logits = self.policy_head(h).squeeze(-1)
+            logits = logits.masked_fill(~mask, -1e9)
+            pooled = (h * mask.unsqueeze(-1)).sum(1) / (
+                mask.sum(1, keepdim=True).clamp(min=1)
+            )
+            return s, h, logits, pooled
 
         def forward(self, state, acts, mask):
             """state (B,F) acts (B,A,D) mask (B,A) True=valid."""
