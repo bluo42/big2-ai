@@ -467,25 +467,41 @@ def beliefs(body: Dict) -> Dict:
     from big2.opponents import OpponentModel
 
     names = _names(ai_kinds)
-    # Per-opponent pass evidence, adapted to each opponent's observed style.
-    honesty = OpponentModel(game, HUMAN).honesty_map(game)
-    b = BeliefState(game, HUMAN, pass_honesty=honesty, rng=random.Random(0))
-    classes = b.class_probabilities(k=150)
-    beat = b.prob_can_beat(game.table_combo, k=150) if game.table_combo else None
-    rank_map = b.rank_probability_map()
-    out = {}
-    for p in b.opponents:
-        out[str(p)] = {
-            "name": names[p],
-            "two": b.prob_holds_two(p),
-            "ace": b.prob_holds_ace(p),
-            "pair": classes[p]["pair"],
-            "triple": classes[p]["triple"],
-            "beat_table": None if beat is None else beat[p],
-            "rank_map": rank_map[p],
-            "known_hand": b.known_hand(p),
+
+    def _view(seat: int) -> Dict:
+        """What ``seat`` believes about everyone else."""
+        honesty = OpponentModel(game, seat).honesty_map(game)
+        b = BeliefState(game, seat, pass_honesty=honesty,
+                        rng=random.Random(0))
+        classes = b.class_probabilities(k=150)
+        beat = (b.prob_can_beat(game.table_combo, k=150)
+                if game.table_combo else None)
+        rank_map = b.rank_probability_map()
+        return {
+            "unseen": b.n_unseen,
+            "opponents": {
+                str(p): {
+                    "name": names[p],
+                    "two": b.prob_holds_two(p),
+                    "ace": b.prob_holds_ace(p),
+                    "pair": classes[p]["pair"],
+                    "triple": classes[p]["triple"],
+                    "beat_table": None if beat is None else beat[p],
+                    "rank_map": rank_map[p],
+                    "known_hand": b.known_hand(p),
+                }
+                for p in b.opponents
+            },
         }
-    return {"unseen": b.n_unseen, "opponents": out}
+
+    mine = _view(HUMAN)
+    # Admin surface: every seat's beliefs, including what each bot
+    # thinks the human and the other bots are holding.
+    mine["seats"] = {
+        str(seat): {"name": names[seat], **_view(seat)}
+        for seat in range(game.num_players)
+    }
+    return mine
 
 
 def register_user(body: Dict) -> Dict:

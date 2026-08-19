@@ -137,6 +137,11 @@
     width: 10px; height: 10px; border-radius: 2px; background: var(--panel-2);
     font-size: .5rem; color: transparent;
   }
+  /* Admin: this bot's own beliefs about every other seat. */
+  .opp .bthinks { margin-top: 6px; padding-top: 5px; border-top: 1px dotted var(--line);
+    font-size: .62rem; color: var(--muted); line-height: 1.45; }
+  .opp .bthinks-t { color: var(--accent); letter-spacing: .06em; font-size: .58rem; }
+  .opp .bthinks b { color: var(--text); font-weight: 600; }
 
   #table {
     background: linear-gradient(160deg, #17301f, #122718);
@@ -477,7 +482,9 @@ function renderAiRows() {
       o.textContent = AI_LABEL[k] || k;
       sel.appendChild(o);
     }
-    sel.value = kinds.includes(prev[i - 1]) ? prev[i - 1] : "ppo11";
+    // Admin seats default to the house lineup, not the legacy champion.
+    sel.value = kinds.includes(prev[i - 1]) ? prev[i - 1]
+      : (LOCKED_LINEUP[(i - 1) % LOCKED_LINEUP.length] || "ppo11");
     row.append(label, sel);
     rows.appendChild(row);
   }
@@ -564,6 +571,11 @@ $("setupBtn").addEventListener("click", () => {
   $("setup").classList.remove("hidden");
 });
 $("newGameBtn").addEventListener("click", () => {
+  // Admin leaving mid-game: drop the stored hand so it does not resume.
+  if (S && S.phase === "playing" && isAdmin()) {
+    try { localStorage.removeItem(ACTIVE_KEY); } catch {}
+    S = null;
+  }
   $("game").classList.remove("active");
   $("setup").classList.remove("hidden");
 });
@@ -728,6 +740,24 @@ function renderBeliefs() {
         strip.appendChild(cell);
       });
       box.appendChild(strip);
+    }
+    // Admin: what THIS bot believes about every other seat.
+    if (beliefsOn && B && B.seats) {
+      const view = B.seats[opp.dataset.seat];
+      if (view) {
+        const mine = document.createElement("div");
+        mine.className = "bthinks";
+        const bits = Object.entries(view.opponents).map(([seat, o]) => {
+          const who = (+seat === (S && S.human_seat)) ? "you" : o.name
+            .replace(/^AI \d+ \(/, "").replace(/\)$/, "");
+          if (o.known_hand) return `${who}: known`;
+          return `${who} 2 <b>${pct(o.two)}</b>/A <b>${pct(o.ace)}</b>` +
+            (o.beat_table === null ? "" : `/beats <b>${pct(o.beat_table)}</b>`);
+        });
+        mine.innerHTML = `<div class="bthinks-t">thinks:</div>` +
+          bits.map((b) => `<div>${b}</div>`).join("");
+        box.appendChild(mine);
+      }
     }
     opp.appendChild(box);
   }
@@ -911,9 +941,12 @@ async function applyState(state) {
       localStorage.removeItem(ACTIVE_KEY);
     }
   } catch {}
-  $("newGameBtn").disabled = state.phase === "playing";
-  $("newGameBtn").title = state.phase === "playing"
-    ? "finish the current game first" : "";
+  // Players must finish what they deal; admins may abandon a game.
+  const stuck = state.phase === "playing" && !isAdmin();
+  $("newGameBtn").disabled = stuck;
+  $("newGameBtn").textContent = (state.phase === "playing" && isAdmin())
+    ? "↻ Leave game" : "↻ New game";
+  $("newGameBtn").title = stuck ? "finish the current game first" : "";
   $("chipRules").textContent = ruleChip(state.rules);
   $("chipScoring").textContent = "payout: " + state.scoring;
 
@@ -1320,7 +1353,7 @@ loadLeaderboard();
   let stored = null;
   try { stored = JSON.parse(localStorage.getItem(ACTIVE_KEY) || "null"); } catch {}
   if (!stored || stored.phase !== "playing") return;
-  lastSettings = { num_ai: 3, ai: ["ppo11", "ppo11", "ppo11"] };
+  lastSettings = { num_ai: 3, ai: [...LOCKED_LINEUP] };
   $("setup").classList.add("hidden");
   $("game").classList.add("active");
   seenHistory = stored.history.length;  // no replay animation on resume
