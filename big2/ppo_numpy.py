@@ -33,12 +33,22 @@ _PARAM_KEYS = [
 ]
 
 
+# Second attention block (the 2026 chain nets): pre-norm residual,
+# exported only when the checkpoint carries it.
+_ATTN2_KEYS = [
+    "attn2.in_proj_weight", "attn2.in_proj_bias",
+    "attn2.out_proj.weight", "attn2.out_proj.bias",
+    "norm2.weight", "norm2.bias",
+]
+
+
 def export_numpy(pt_path: str, npz_path: str = DEFAULT_NPZ) -> None:
     import torch
 
     payload = torch.load(pt_path, map_location="cpu", weights_only=True)
     sd = payload["state_dict"]
-    arrays = {k.replace(".", "__"): sd[k].numpy() for k in _PARAM_KEYS}
+    keys = list(_PARAM_KEYS) + [k for k in _ATTN2_KEYS if k in sd]
+    arrays = {k.replace(".", "__"): sd[k].numpy() for k in keys}
     arrays["d_model"] = np.array(payload.get("d_model", 192))
     arrays["heads"] = np.array(payload.get("heads", 4))
     np.savez(npz_path, **arrays)
@@ -74,6 +84,27 @@ class NumpyPPOPolicy:
         }
         return cls(params, int(data["d_model"]), int(data["heads"]))
 
+    def _attend(self, h: np.ndarray, prefix: str) -> np.ndarray:
+        p = self.p
+        d, nh = self.d, self.heads
+        dh = d // nh
+        qkv = h @ p[f"{prefix}.in_proj_weight"].T + p[f"{prefix}.in_proj_bias"]
+        q, k, v = qkv[:, :d], qkv[:, d : 2 * d], qkv[:, 2 * d :]
+        A = h.shape[0]
+        q = q.reshape(A, nh, dh).transpose(1, 0, 2) / np.sqrt(dh)
+        k = k.reshape(A, nh, dh).transpose(1, 0, 2)
+        v = v.reshape(A, nh, dh).transpose(1, 0, 2)
+        attn = _softmax(q @ k.transpose(0, 2, 1)) @ v  # (heads, A, dh)
+        attn = attn.transpose(1, 0, 2).reshape(A, d)
+        return attn @ p[f"{prefix}.out_proj.weight"].T \
+            + p[f"{prefix}.out_proj.bias"]
+
+    @staticmethod
+    def _layernorm(x: np.ndarray, w: np.ndarray, b: np.ndarray) -> np.ndarray:
+        mean = x.mean(axis=-1, keepdims=True)
+        var = x.var(axis=-1, keepdims=True)
+        return (x - mean) / np.sqrt(var + 1e-5) * w + b
+
     def _logits(self, state: np.ndarray, acts: np.ndarray) -> np.ndarray:
         p = self.p
         s = _relu(state @ p["state_mlp.0.weight"].T + p["state_mlp.0.bias"])
@@ -82,29 +113,22 @@ class NumpyPPOPolicy:
         a = a @ p["act_mlp.2.weight"].T + p["act_mlp.2.bias"]
         h = a + s  # (A, d): action embeddings conditioned on the state
 
-        d, nh = self.d, self.heads
-        dh = d // nh
-        qkv = h @ p["attn.in_proj_weight"].T + p["attn.in_proj_bias"]
-        q, k, v = qkv[:, :d], qkv[:, d : 2 * d], qkv[:, 2 * d :]
-        A = h.shape[0]
-        q = q.reshape(A, nh, dh).transpose(1, 0, 2) / np.sqrt(dh)
-        k = k.reshape(A, nh, dh).transpose(1, 0, 2)
-        v = v.reshape(A, nh, dh).transpose(1, 0, 2)
-        attn = _softmax(q @ k.transpose(0, 2, 1)) @ v  # (heads, A, dh)
-        attn = attn.transpose(1, 0, 2).reshape(A, d)
-        attn = attn @ p["attn.out_proj.weight"].T + p["attn.out_proj.bias"]
-
-        x = h + attn
-        mean = x.mean(axis=-1, keepdims=True)
-        var = x.var(axis=-1, keepdims=True)
-        x = (x - mean) / np.sqrt(var + 1e-5)
-        x = x * p["norm.weight"] + p["norm.bias"]
+        x = self._layernorm(h + self._attend(h, "attn"),
+                            p["norm.weight"], p["norm.bias"])
+        if "attn2.in_proj_weight" in p:
+            # Pre-norm residual second block, exactly as in Big2Net.
+            n2 = self._layernorm(x, p["norm2.weight"], p["norm2.bias"])
+            x = x + self._attend(n2, "attn2")
 
         return (x @ p["policy_head.weight"].T + p["policy_head.bias"])[:, 0]
 
-    def select(self, game: Big2Game, player: int) -> Optional[Combo]:
+    def option_scores(self, game: Big2Game, player: int):
+        """(options, logits) — the same interface as neural.PPOPolicy,
+        so the IS-MCTS agent can use this port as its prior."""
         from big2.features import FEAT_DIM
-        from big2.neural import ACT_DIM, ACT_DIM_V11, STATE_DIM
+        from big2.neural import (
+            ACT_DIM, ACT_DIM_BEAT, ACT_DIM_V11, STATE_DIM,
+        )
 
         in_dim = self.p["state_mlp.0.weight"].shape[1]
         a_dim = self.p["act_mlp.0.weight"].shape[1]
@@ -112,10 +136,15 @@ class NumpyPPOPolicy:
             game, player, include_profiles=(in_dim != FEAT_DIM),
             include_danger=(a_dim >= ACT_DIM_V11),
             include_plan=(a_dim >= ACT_DIM and in_dim >= STATE_DIM),
+            include_beat=(a_dim >= ACT_DIM_BEAT),
         )
+        return options, self._logits(state, acts)
+
+    def select(self, game: Big2Game, player: int) -> Optional[Combo]:
+        options, logits = self.option_scores(game, player)
         if len(options) == 1:
             return options[0]
-        return options[int(np.argmax(self._logits(state, acts)))]
+        return options[int(np.argmax(logits))]
 
 
 def main() -> None:

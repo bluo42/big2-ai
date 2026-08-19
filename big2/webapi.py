@@ -95,14 +95,32 @@ def make_ai(name: str, seed: Optional[int] = None) -> Strategy:
             return SmartHeuristic()
     if name in ("wangbot2", "sicario", "leonidas", "khabib"):
         # The chain finals (2026-08-18): the locked default table.
+        # torch locally, numpy port on serverless; either way the bot
+        # plays in its deployed shape — the tree (exact solver +
+        # IS-MCTS below 26 cards) is ON in production.
         stems = {"wangbot2": "wangbot_v2", "sicario": "sicario_v1",
                  "leonidas": "leonidas_v1", "khabib": "khabib_v1"}
+        policy = None
         try:
             from big2.neural import PPOPolicy
 
-            return PPOPolicy.load(_policy_path(f"{stems[name]}.pt"))
+            policy = PPOPolicy.load(_policy_path(f"{stems[name]}.pt"))
         except Exception:
+            try:
+                from big2.ppo_numpy import NumpyPPOPolicy
+
+                policy = NumpyPPOPolicy.load(
+                    _policy_path(f"{stems[name]}_np.npz"))
+            except Exception:
+                policy = None
+        if policy is None:
             return make_ai("ppo11", seed)
+        try:
+            from big2.neural import SearchAssist
+
+            return SearchAssist(policy, seed=seed)
+        except Exception:
+            return policy
     if name in ("ppo", "ppo11"):
         # torch is training-only; deploys use the numpy inference port.
         # 'ppo' is the shipped v1 champion; 'ppo11' the endgame-aware
