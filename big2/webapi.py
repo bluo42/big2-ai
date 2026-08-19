@@ -98,7 +98,12 @@ def make_ai(name: str, seed: Optional[int] = None) -> Strategy:
         # torch locally, numpy port on serverless; either way the bot
         # plays in its deployed shape — the tree (exact solver +
         # IS-MCTS below 26 cards) is ON in production.
-        stems = {"wangbot2": "wangbot_v2", "sicario": "sicario_v1",
+        # The house table runs two Khabib seats and one v2: the
+        # "sicario" kind loads Khabib's weights.  Its label, stamp and
+        # policy-file entry are deliberately unchanged, so records,
+        # leaderboard filters and saved games keep resolving exactly as
+        # before -- only the network behind the seat differs.
+        stems = {"wangbot2": "wangbot_v2", "sicario": "khabib_v1",
                  "leonidas": "leonidas_v1", "khabib": "khabib_v1"}
         policy = None
         try:
