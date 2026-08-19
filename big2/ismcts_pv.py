@@ -188,6 +188,7 @@ class PolicyValueISMCTS:
         top_p: float = TOP_P,
         rollout_temp: float = 0.8,
         trick_cutoff: bool = True,
+        shaping: float = 1.0,
     ):
         self.policy = policy
         self.simulations = simulations
@@ -203,6 +204,9 @@ class PolicyValueISMCTS:
         self.top_p = float(top_p)
         self.rollout_temp = float(rollout_temp)
         self.trick_cutoff = bool(trick_cutoff)
+        # Trick-level potential weight on non-exact leaves (0 = off).
+        self.shaping = float(shaping)
+        self._phi_root: Optional[float] = None
 
     # ------------------------------------------------------------------
     # Policy access
@@ -251,7 +255,15 @@ class PolicyValueISMCTS:
     # ------------------------------------------------------------------
 
     def _value(self, game: Big2Game, player: int) -> Tuple[float, bool]:
-        """(leaf value in [-1, 1], was_it_exact)."""
+        """(leaf value in [-1, 1], was_it_exact).
+
+        Non-exact leaves carry a trick-level potential bonus,
+        phi(leaf) - phi(root) (big2/shaping.py): the playout stops at
+        trick boundaries, which is exactly where the potential is
+        defined, so the tree prices control, tempo and boss cards the
+        same way the shaped policy gradient does.  Terminal and solver
+        leaves are the true game value already -- no bonus.
+        """
         if game.game_over:
             return float(game.scores[player]) / SCORE_SCALE, True
         if remaining_cards(game) <= self.solve_below:
@@ -283,7 +295,7 @@ class PolicyValueISMCTS:
                             torch.from_numpy(acts).unsqueeze(0),
                             torch.ones(1, len(options), dtype=torch.bool),
                         )
-                    return float(v[0]), False
+                    return float(v[0]) + self._phi_bonus(game, player), False
             except Exception:
                 pass
         # Last resort: a card-count read of the race.
@@ -292,7 +304,17 @@ class PolicyValueISMCTS:
                   if p != player]
         return float(np.clip(
             ((sum(others) / max(1, len(others))) - mine) / 13.0, -1.0, 1.0
-        )), False
+        )) + self._phi_bonus(game, player), False
+
+    def _phi_bonus(self, game: Big2Game, player: int) -> float:
+        if not self.shaping:
+            return 0.0
+        from big2.shaping import potential
+
+        if self._phi_root is None:
+            return 0.0
+        return self.shaping * (
+            potential(game, player) - self._phi_root) / SCORE_SCALE
 
     def _greedy_below(self, world: Big2Game) -> bool:
         """Near the end, in-tree replies go greedy.
@@ -414,6 +436,12 @@ class PolicyValueISMCTS:
     def search(self, game: Big2Game, player: int) -> SearchResult:
         started = time.monotonic()
         deadline = started + self.time_budget
+        if self.shaping:
+            try:
+                from big2.shaping import potential
+                self._phi_root = potential(game, player)
+            except Exception:
+                self._phi_root = None
 
         options, prior = self._prior(game, player)
         keys = [move_key(m) for m in options]

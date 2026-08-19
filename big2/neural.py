@@ -60,6 +60,7 @@ from big2.profiles import PROFILE_DIM, OpponentProfileBook
 from big2.rl import NUM_FEATURES as CEM_DIM
 from big2.rl import LinearPolicy, move_features as cem_move_features
 from big2.rules import DEFAULT_RULES
+from big2.shaping import potential as _potential
 from big2.strategies import FiveCardDumper, SmartHeuristic, Strategy
 
 SCORE_SCALE = 39.0
@@ -74,6 +75,15 @@ SCORE_SCALE = 39.0
 # training entirely.
 SEARCH_CARDS_4P = 26
 SEARCH_CARDS_23P = 18
+# Mixed strategy in search-assisted rollouts: above this many cards
+# left the executed move is SAMPLED from the search's visit
+# distribution (so training sees and plays mixed strategies); at or
+# below it the argmax takes over -- the endgame is about being right.
+MIX_ARGMAX_BELOW = 20
+# Weight on the cross-entropy pull toward the search's visit
+# distribution for decisions the search made (AlphaZero-style
+# distillation; those decisions are excluded from the PPO ratio).
+DISTILL_COEF = 1.0
 # v1.1: sharp endgame-danger block appended to every action encoding.
 # Counts existed as soft /13 scalars before; these are the thresholded
 # versions plus the interactions that matter ("the next actor is nearly
@@ -905,7 +915,7 @@ def rollout_games(args) -> bytes:
         )
         trajs: Dict[int, Dict[str, list]] = {
             p: {"state": [], "acts": [], "chosen": [], "logp": [],
-                "value": [], "belief": []}
+                "value": [], "belief": [], "phi": [], "visits": []}
             for p in ppo_seats
         }
         while not game.game_over:
@@ -934,23 +944,45 @@ def rollout_games(args) -> bytes:
                 )
                 dist = torch.distributions.Categorical(logits=logits[0])
                 idx = int(dist.sample())
+            visit_target = None
             if searcher is not None:
                 from big2.endgame import move_key as _mk
                 from big2.endgame import remaining_cards as _rc
                 limit = (SEARCH_CARDS_4P if n_seats == 4
                          else SEARCH_CARDS_23P)
-                if _rc(game) < limit:
-                    # Search proposes; the executed move is logged with
-                    # the net's own logp so PPO's clipped ratio stays
-                    # anchored to the policy that produced the batch.
+                left = _rc(game)
+                if left < limit:
+                    # AlphaZero pattern: the search's visit distribution
+                    # becomes a cross-entropy target and the decision is
+                    # EXCLUDED from the PPO ratio (the old code logged
+                    # the search's move with the policy's own logp -- a
+                    # mismatched importance ratio that punished the
+                    # policy for moves it never sampled).  Early in the
+                    # hand the executed move is *sampled* from the
+                    # visits (mixed strategy); late it is the argmax.
                     try:
                         dec = searcher.explain(game, p)
-                        for j, m in enumerate(options):
-                            if _mk(m) == dec.move:
-                                idx = j
-                                break
+                        vis = getattr(dec, "visits", None) or {}
+                        counts = np.array(
+                            [float(vis.get(_mk(m), 0.0)) for m in options],
+                            dtype=np.float64,
+                        )
+                        if counts.sum() > 0:
+                            visit_target = (counts / counts.sum()).astype(
+                                np.float32)
+                            if left > MIX_ARGMAX_BELOW:
+                                idx = int(np.random.default_rng(
+                                    rng.randrange(2**31)).choice(
+                                        len(options), p=visit_target))
+                            else:
+                                idx = int(np.argmax(counts))
+                        else:
+                            for j, m in enumerate(options):
+                                if _mk(m) == dec.move:
+                                    idx = j
+                                    break
                     except Exception:
-                        pass
+                        visit_target = None
             logp = float(dist.log_prob(torch.tensor(idx)))
             t = trajs[p]
             t["state"].append(state)
@@ -959,6 +991,8 @@ def rollout_games(args) -> bytes:
             t["logp"].append(logp)
             t["value"].append(float(value[0]))
             t["belief"].append(belief_target(game, p))
+            t["phi"].append(_potential(game, p))
+            t["visits"].append(visit_target)
             game.step(options[idx])
 
         # Fold the finished game into the cross-game opponent profiles.
@@ -983,15 +1017,27 @@ def rollout_games(args) -> bytes:
 # ----------------------------------------------------------------------
 
 
-def _gae(values: List[float], final_return: float, lam: float = 0.95):
-    """Terminal-reward GAE with gamma=1."""
+def _gae(values: List[float], final_return: float, lam: float = 0.95,
+         phi: Optional[List[float]] = None):
+    """GAE with gamma=1: terminal reward plus optional trick-level
+    potential shaping.
+
+    With ``phi`` (big2/shaping.py, raw points), each step carries
+    r_t = phi_{t+1} - phi_t (terminal phi = 0).  The sum telescopes to
+    -phi_0, so the episode return only shifts by a constant of the deal
+    -- the optimal policy is unchanged, but credit for winning a trick
+    lands at the decision that won it instead of forty cards later.
+    """
     T = len(values)
     adv = np.zeros(T, dtype=np.float32)
     gae = 0.0
     for t in reversed(range(T)):
         next_v = final_return if t == T - 1 else values[t + 1]
-        # reward is 0 everywhere; the terminal value IS the game score
-        delta = next_v - values[t]
+        r = 0.0
+        if phi is not None and len(phi) == T:
+            next_phi = 0.0 if t == T - 1 else phi[t + 1]
+            r = (next_phi - phi[t]) / SCORE_SCALE
+        delta = r + next_v - values[t]
         gae = delta + lam * gae
         adv[t] = gae
     returns = adv + np.asarray(values, dtype=np.float32)
@@ -1254,9 +1300,11 @@ def train_ppo(
 
         flat_state, flat_acts, flat_mask = [], [], []
         flat_chosen, flat_logp, flat_adv, flat_ret, flat_belief = [], [], [], [], []
+        flat_visits, flat_searched = [], []
         max_a = max(len(a) for e in episodes for a in e["acts"])
         for e in episodes:
-            adv, ret = _gae(e["value"], e["score"])
+            adv, ret = _gae(e["value"], e["score"], phi=e.get("phi"))
+            visits = e.get("visits") or [None] * len(e["acts"])
             for i, acts in enumerate(e["acts"]):
                 A = len(acts)
                 padded = np.zeros((max_a, act_dim), dtype=np.float32)
@@ -1271,6 +1319,13 @@ def train_ppo(
                 flat_adv.append(adv[i])
                 flat_ret.append(ret[i])
                 flat_belief.append(e["belief"][i])
+                v = np.zeros(max_a, dtype=np.float32)
+                if visits[i] is not None:
+                    v[: len(visits[i])] = visits[i]
+                    flat_searched.append(True)
+                else:
+                    flat_searched.append(False)
+                flat_visits.append(v)
 
         S = torch.from_numpy(np.stack(flat_state))
         A_ = torch.from_numpy(np.stack(flat_acts))
@@ -1281,10 +1336,13 @@ def train_ppo(
         ADV = (ADV - ADV.mean()) / (ADV.std() + 1e-6)
         RET = torch.tensor(np.asarray(flat_ret))
         B = torch.from_numpy(np.stack(flat_belief))
+        VT = torch.from_numpy(np.stack(flat_visits))
+        SM = torch.tensor(flat_searched, dtype=torch.bool)
         if dev.type != "cpu":
             S, A_, M, C = S.to(dev), A_.to(dev), M.to(dev), C.to(dev)
             LP, ADV, RET, B = (LP.to(dev), ADV.to(dev), RET.to(dev),
                                B.to(dev))
+            VT, SM = VT.to(dev), SM.to(dev)
         n = len(S)
 
         pol_loss = val_loss = ent = bel_loss = 0.0
@@ -1295,19 +1353,28 @@ def train_ppo(
                 logits, value, belief = net(S[idx], A_[idx], M[idx])
                 dist = torch.distributions.Categorical(logits=logits)
                 logp = dist.log_prob(C[idx])
-                # Search-executed moves can sit far out in the policy's
-                # tail (large negative stored logp), and once entropy is
-                # low the multi-epoch update can push the log-ratio past
-                # float range — exp overflows to inf and one bad
-                # minibatch NaNs the net (this killed a run at iter 90).
-                # Past the PPO clip band the surrogate is flat anyway,
-                # so clamping the log-ratio changes nothing legitimate.
+                # The log-ratio clamp guards float range: past the PPO
+                # clip band the surrogate is flat anyway, and one
+                # overflowing minibatch once NaNed a whole run.
                 ratio = torch.exp((logp - LP[idx]).clamp(-20.0, 4.0))
                 surr = torch.min(
                     ratio * ADV[idx],
                     torch.clamp(ratio, 1 - clip, 1 + clip) * ADV[idx],
                 )
-                p_loss = -surr.mean()
+                # Decisions the search made are NOT policy samples: they
+                # get no ratio term (the old mismatched-ratio bug) and
+                # instead a cross-entropy pull toward the search's visit
+                # distribution -- deeper thinking distilled into the
+                # prior, AlphaZero-style.
+                searched = SM[idx]
+                free = ~searched
+                p_loss = (-(surr * free).sum()
+                          / free.sum().clamp(min=1))
+                if searched.any():
+                    lsm = torch.log_softmax(logits, dim=-1)
+                    ce = -(VT[idx] * lsm).masked_fill(~M[idx], 0.0).sum(-1)
+                    p_loss = p_loss + DISTILL_COEF * (
+                        (ce * searched).sum() / searched.sum())
                 v_loss = ((value - RET[idx]) ** 2).mean()
                 e_loss = dist.entropy().mean()
                 b_loss = torch.nn.functional.binary_cross_entropy_with_logits(
