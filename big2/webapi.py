@@ -182,22 +182,33 @@ _POLICY_FILES = {
 }
 
 
+# Generation tag for the house bots since the tree went live in
+# production (2026-08-18).  Baked into the stamp's version part so the
+# leaderboard can cleanly separate v4-tree games from the earlier era
+# (when serverless silently fell back to the WangBot_v1 port).
+_GENERATION = {"wangbot2": "v4t", "sicario": "v4t", "khabib": "v4t",
+               "leonidas": "v4t"}
+
+
 def model_stamp(kind: Optional[str]) -> str:
     """Time-stamped model identity, e.g. 'WangBot_v1@20260818-0114', so
     scores stay attributable to the exact model version that was playing."""
     if kind is None:
         return "you"
     label = KIND_LABEL.get(kind, kind)
+    gen = _GENERATION.get(kind)
+    prefix = f"{gen}-" if gen else ""
     fname = _POLICY_FILES.get(kind)
     if fname is None:
-        return f"{label}@builtin"
+        return f"{label}@{prefix}builtin"
     import time as _time
 
     try:
         mtime = os.path.getmtime(_policy_path(fname))
-        return f"{label}@{_time.strftime('%Y%m%d-%H%M', _time.gmtime(mtime))}"
+        stamp = _time.strftime('%Y%m%d-%H%M', _time.gmtime(mtime))
+        return f"{label}@{prefix}{stamp}"
     except OSError:
-        return f"{label}@builtin"
+        return f"{label}@{prefix}builtin"
 
 
 import os  # noqa: E402  (used by model_stamp/_policy_path)
