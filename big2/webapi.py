@@ -118,7 +118,11 @@ def make_ai(name: str, seed: Optional[int] = None) -> Strategy:
         try:
             from big2.neural import SearchAssist
 
-            return SearchAssist(policy, seed=seed)
+            # Deployment strength: 1024 simulations, hard 1s per move.
+            # The clock binds long before the sim cap on most nodes, so
+            # this is "search until a second is up".
+            return SearchAssist(policy, seed=seed,
+                                simulations=1024, time_budget=1.0)
         except Exception:
             return policy
     if name in ("ppo", "ppo11"):

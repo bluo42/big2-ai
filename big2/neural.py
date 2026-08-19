@@ -530,13 +530,14 @@ class SearchAssist(Strategy):
     confirmation so the gate, the confirmation, and deployment all
     measure the same player; opponents stay raw policies."""
 
-    def __init__(self, policy: Strategy, seed: int = 0):
+    def __init__(self, policy: Strategy, seed: int = 0,
+                 simulations: int = 64, time_budget: float = 0.10):
         from big2.agent import IntegratedAgent
 
         self.policy = policy
         self.agent = IntegratedAgent(
-            policy, simulations=64, depth=10, breadth=6, top_p=0.9,
-            time_budget=0.10, seed=seed,
+            policy, simulations=simulations, depth=10, breadth=6,
+            top_p=0.9, time_budget=time_budget, seed=seed,
         )
         self.name = f"assist({getattr(policy, 'name', 'policy')})"
 
