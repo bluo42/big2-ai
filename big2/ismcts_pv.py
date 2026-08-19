@@ -84,7 +84,8 @@ SOLVE_BELOW = 12          # leaves this small are solved, not estimated
 MAX_ROLLOUT_STEPS = 400
 GREEDY_REPLIES_BELOW = 20  # in-tree opponents stop sampling this late
 MAX_CANDIDATES = 3         # the prior's shortlist gets the whole budget
-MIN_CAND_PRIOR = 0.01      # ...and only moves the prior takes seriously
+MIN_CAND_PRIOR = 0.01      # legacy floor (kept for callers/tests)
+THIRD_CAND_PRIOR = 0.05    # a third candidate needs real prior mass
 
 # Tie-breaking (2026-08-19).  Measured values -- PIMC expectations and
 # search Q -- routinely tie outright: in a lost endgame every line is
@@ -434,17 +435,26 @@ class PolicyValueISMCTS:
         # keeps its report entry with zero visits, so the caller sees
         # it was considered and dismissed.
         order = sorted(range(len(options)), key=lambda i: -prior[i])
-        cand = [i for i in order[:MAX_CANDIDATES]
-                if prior[i] >= MIN_CAND_PRIOR]
+        live = [i for i in order if prior[i] > 0.0]
+        cand = live[:2]
+        # A third candidate only when the prior genuinely cannot choose:
+        # all three must clear THIRD_CAND_PRIOR.  Otherwise the budget
+        # goes to the two moves actually in contention.
+        if len(live) >= MAX_CANDIDATES and all(
+            prior[i] > THIRD_CAND_PRIOR for i in live[:MAX_CANDIDATES]
+        ):
+            cand = live[:MAX_CANDIDATES]
         if not cand:
             cand = [order[0]]
-        # Passing is always measured when it is legal and optional.
-        # Hold-or-spend is the decision the prior is least reliable on
-        # (it is the leak the human study found), and it is exactly the
-        # move a lopsided prior starves: without this, the agent can
-        # choose to pass having never simulated passing.
+        # Passing is measured whenever there is room for it: hold-or-
+        # spend is the decision the prior is least reliable on (the leak
+        # the human study found), and a lopsided prior starves it --
+        # without this the agent can choose to pass having never once
+        # simulated passing.  With three live candidates the shortlist
+        # is already full.
         pass_idx = next((i for i, m in enumerate(options) if m is None), None)
-        if pass_idx is not None and pass_idx not in cand:
+        if (pass_idx is not None and pass_idx not in cand
+                and len(cand) < MAX_CANDIDATES):
             cand.append(pass_idx)
         if len(cand) == 1:
             # One live candidate and no pass to weigh it against: the

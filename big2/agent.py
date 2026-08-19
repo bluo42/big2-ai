@@ -49,6 +49,7 @@ from big2.endgame import MoveKey, move_key, remaining_cards
 from big2.game import Big2Game
 from big2.ismcts_pv import (
     PRIOR_LAMBDA_POINTS,
+    SCORE_SCALE,
     TIME_BUDGET,
     PolicyValueISMCTS,
     SearchResult,
@@ -58,12 +59,14 @@ from big2.strategies import Strategy
 
 # Cards left at which lines can be verified instead of estimated.
 SOLVE_CARDS = 14
-# Points per game the search must beat the policy by to override it.
-# Lowered 0.35 -> 0.10 (2026-08-18): the tree bakes the policy in as
-# its prior, so a tree move is not an anti-policy move — with a strong
-# prior the search should be allowed to decide whenever its measured
-# edge is real rather than only when it is dramatic.
-OVERRIDE_MARGIN = 0.10
+# How much better the search must rate its pick before it may overrule
+# the policy, stated in the value head's own units -- Q is what the
+# search measures, so that is where the bar belongs.  The earlier bar
+# was 0.10 *points per game*, which is 0.10/39 = 0.0026 of Q: well
+# inside sampling noise, so near-coin-flips were overriding a policy
+# trained on millions of hands.  0.10 of Q is a real difference.
+OVERRIDE_MARGIN_Q = 0.10
+OVERRIDE_MARGIN = OVERRIDE_MARGIN_Q * SCORE_SCALE   # ~3.9 points/game
 
 
 @dataclass
