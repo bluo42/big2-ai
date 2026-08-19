@@ -218,6 +218,8 @@
   /* current-trick plays shown in front of each player */
   .opp .tplay { margin-top: 6px; min-height: 34px; display: flex; align-items: center; justify-content: center; gap: 2px; }
   .opp .tplay .pass-note { color: var(--muted); font-size: .7rem; font-style: italic; }
+  .pass-hand { font-style: normal; font-size: .95rem; vertical-align: -1px;
+    filter: grayscale(.35); }
   .seq {
     display: inline-flex; align-items: center; justify-content: center;
     width: 15px; height: 15px; border-radius: 999px; background: var(--accent);
@@ -657,7 +659,8 @@ function playEl(info) {
   if (info.pass) {
     const p = document.createElement("span");
     p.className = "pass-note";
-    p.textContent = "passed";
+    // A raised hand reads as "passed" at a glance, faster than the word.
+    p.innerHTML = '<span class="pass-hand">✋</span> passed';
     holder.appendChild(p);
   } else {
     for (const c of info.cards) holder.appendChild(cardEl(c, "icon"));
@@ -704,7 +707,7 @@ function renderOpponents(view) {
     if (p.passed) d.classList.add("passed");
     if (p.seat === thinkingSeat) d.classList.add("thinking");
     d.innerHTML = `
-      <div class="badge">PASSED</div>
+      <div class="badge">✋ PASSED</div>
       <div class="spinner" aria-hidden="true"></div>
       <div class="name">${p.name}</div>
       <div class="count">${p.cards}<small> cards</small></div>
@@ -920,9 +923,10 @@ function updateControls() {
   const myTurn = S.phase === "playing" && S.turn === S.human_seat && !busy;
   const match = selectionCombo();
   $("playBtn").disabled = !myTurn || !match;
-  $("playBtn").textContent = match
-    ? "Play " + (TYPE_LABEL[match.type] || match.type)
-    : "Play";
+  // The label stays "Play": naming the combo resized the button and
+  // shifted it under the cursor between selections.  The combo name
+  // lives in the tooltip instead, where it costs no layout.
+  $("playBtn").title = match ? (TYPE_LABEL[match.type] || match.type) : "";
   $("passBtn").disabled = !myTurn || !S.can_pass;
 
   if (!myTurn) return;
@@ -1450,15 +1454,58 @@ $("playBtn").addEventListener("click", async () => {
   if (busy) return;
   const match = selectionCombo();
   if (!match) return;
-  const state = await post("/api/play", { state: FS, cards: [...selected] });
+  const cards = [...selected];
+  busy = true;                       // no double-submit during the wait
+  showActedThenThinking(cards, match.type);
+  const state = await post("/api/play", { state: FS, cards });
   if (state) { selected.clear(); await applyState(state); }
+  else undoOptimistic();
 });
 
+/* The server takes a beat to answer (each bot searches for up to a
+   second), so the table must react to YOUR action at once: show the
+   move, then start the next seat thinking.  When the response lands,
+   applyState re-renders authoritatively over the top. */
+function nextSeatWithCards(from) {
+  if (!S) return null;
+  for (let step = 1; step <= S.num_players; step++) {
+    const seat = (from + step) % S.num_players;
+    const p = S.players.find((q) => q.seat === seat);
+    if (seat !== S.human_seat && p && p.cards > 0) return seat;
+  }
+  return null;
+}
+
+function showActedThenThinking(cards, type) {
+  if (cards) {
+    for (const c of cards) {
+      const el = document.querySelector(`#hand .card[data-card="${c}"]`);
+      if (el) el.remove();
+    }
+    renderTable({ cards, type }, "You");
+  }
+  const next = nextSeatWithCards(S.human_seat);
+  if (next === null) return;
+  thinkingSeat = next;
+  renderOpponents({ players: S.players, turn: next, over: false });
+  setStatus(`${nameOf(next)} is thinking…`);
+}
+
+function undoOptimistic() {
+  thinkingSeat = null;
+  busy = false;
+  renderHand();
+  if (S) renderOpponents({ players: S.players, turn: S.turn, over: false });
+}
+
 async function doPass() {
+  busy = true;                       // no double-submit during the wait
+  showActedThenThinking(null, null);
   // Passing rides the play endpoint ("pass" is a reserved word in Python,
   // so it can't be a Vercel function filename).
   const state = await post("/api/play", { state: FS, pass: true });
   if (state) { selected.clear(); await applyState(state); }
+  else undoOptimistic();
 }
 
 function hidePassConfirm() { $("passConfirm").classList.add("hidden"); }
