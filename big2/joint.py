@@ -458,7 +458,14 @@ def train_joint(
     for batch in range(batches):
         t0 = time.time()
         if heartbeat_path:
-            open(heartbeat_path, "w", encoding="utf-8").close()  # fresh
+            # Header first: the reader needs the pool size to scale the
+            # rate off the workers that have reported so far.
+            with open(heartbeat_path, "w", encoding="utf-8") as f:
+                f.write(json.dumps({
+                    "header": True, "workers": workers,
+                    "total": per * workers, "batch": batch + 1,
+                    "sims": simulations, "budget": time_budget,
+                }) + "\n")
         blobs = {}
         for name, net in nets.items():
             p = payloads[name]
@@ -534,6 +541,7 @@ def read_heartbeat(path: str = os.path.join(HERE, "..",
                    total: Optional[int] = None) -> Dict:
     """Aggregate the workers' latest beats into one progress view."""
     latest: Dict[int, Dict] = {}
+    header: Dict = {}
     try:
         with open(path, encoding="utf-8") as f:
             for line in f:
@@ -544,7 +552,10 @@ def read_heartbeat(path: str = os.path.join(HERE, "..",
                     row = json.loads(line)
                 except ValueError:
                     continue            # a torn append: skip, never crash
-                latest[row["pid"]] = row
+                if row.get("header"):
+                    header = row
+                else:
+                    latest[row["pid"]] = row
     except OSError:
         return {"workers": 0, "games": 0}
     if not latest:
@@ -557,10 +568,21 @@ def read_heartbeat(path: str = os.path.join(HERE, "..",
             score[n] = score.get(n, 0.0) + v * r["games"]
         for n, v in r.get("wins", {}).items():
             wins[n] = wins.get(n, 0) + v
-    rate = games / max(1e-9, max(r["elapsed"] for r in latest.values()))
+    # Workers beat on their own schedule, so early on only a few have
+    # reported.  Rate must come from each worker's OWN games/elapsed and
+    # then scale to the pool -- dividing the reported games by the
+    # longest elapsed counts silent workers as doing nothing, which
+    # once produced a 93-hour ETA for a 10-hour run.
+    pool = int(header.get("workers") or len(latest))
+    per_worker = sum(r["games"] / max(1e-9, r["elapsed"])
+                     for r in latest.values()) / len(latest)
+    rate = per_worker * pool
+    done = int(round(games * pool / len(latest)))    # scale up the silent
     out = {
-        "workers": len(latest), "games": games,
-        "games_per_min": round(rate * 60, 1),
+        "workers": f"{len(latest)}/{pool}", "games": games,
+        "games_est": done,
+        "games_per_min": round(rate * 60, 2),
+        "sec_per_game_per_worker": round(1.0 / max(1e-9, per_worker), 1),
         "score": {n: round(v / max(1, games), 3) for n, v in score.items()},
         "wins": {n: round(100.0 * v / max(1, games), 1)
                  for n, v in wins.items()},
@@ -569,8 +591,8 @@ def read_heartbeat(path: str = os.path.join(HERE, "..",
             / len(latest), 3),
     }
     if total:
-        out["pct"] = round(100.0 * games / total, 1)
-        remain = max(0, total - games) / max(1e-9, rate)
+        out["pct"] = round(100.0 * done / total, 1)
+        remain = max(0, total - done) / max(1e-9, rate)
         out["eta_hours"] = round(remain / 3600, 2)
     return out
 
