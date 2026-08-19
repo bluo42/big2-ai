@@ -78,7 +78,10 @@ def _load_payload(name: str) -> Dict:
         # v2_patient before its AWR pass lands: start from its parent.
         path = os.path.join(POLICIES, "wangbot_v2.pt")
     payload = torch.load(path, map_location="cpu", weights_only=True)
-    sd = payload["state_dict"]
+    sd = dict(payload["state_dict"])
+    # The privileged critic rides in its own slot so the shipped
+    # state_dict stays exactly what deployment loaders expect.
+    sd.update(payload.get("oracle_state", {}))
     return {
         "state_dict": sd,
         "d_model": payload.get("d_model", 192),
@@ -89,8 +92,8 @@ def _load_payload(name: str) -> Dict:
     }
 
 
-def _build(payload: Dict):
-    from big2.neural import build_net
+def _build(payload: Dict, oracle: bool = False):
+    from big2.neural import BELIEF_SLOTS, build_net
 
     net = build_net(
         payload["d_model"], payload["heads"],
@@ -98,8 +101,15 @@ def _build(payload: Dict):
         layers=payload["layers"],
         attn_blocks=2 if any(k.startswith("attn2.")
                              for k in payload["state_dict"]) else 1,
+        oracle_dim=BELIEF_SLOTS if oracle else 0,
     )
-    net.load_state_dict(payload["state_dict"])
+    # Oracle-head keys are absent from every existing checkpoint and
+    # start fresh; nothing else may be missing.
+    res = net.load_state_dict(payload["state_dict"], strict=False)
+    bad = [k for k in res.missing_keys if not k.startswith("oracle_")]
+    if bad or res.unexpected_keys:
+        raise RuntimeError(f"load mismatch: missing {bad}, "
+                           f"unexpected {list(res.unexpected_keys)}")
     net.eval()
     return net
 
@@ -240,8 +250,33 @@ def _update(net, episodes: List[Dict], lr: float, epochs: int,
     act_dim = net.act_dim
     fs, fa, fm, fc, flp, fadv, fret, fb, fv, fsr = ([] for _ in range(10))
     max_a = max(len(a) for e in episodes for a in e["acts"])
-    for e in episodes:
-        adv, ret = _gae(e["value"], e["score"], phi=e.get("phi"))
+
+    # Privileged baseline: recompute each state's value with the true
+    # opponent hands visible (the rollout already recorded them as the
+    # belief target).  A baseline that does not depend on the action
+    # leaves the policy gradient unbiased, and seeing the hands is
+    # worth +0.05 to +0.10 correlation with the outcome in the early
+    # and middle game -- exactly where the ordinary critic is blind.
+    oracle_values = {}
+    if getattr(net, "oracle_dim", 0):
+        with torch.no_grad():
+            for ei, e in enumerate(episodes):
+                A = max(len(a) for a in e["acts"])
+                st = torch.from_numpy(np.stack(e["state"])).to(dev)
+                ac = torch.zeros(len(e["acts"]), A, act_dim, device=dev)
+                mk = torch.zeros(len(e["acts"]), A, dtype=torch.bool,
+                                 device=dev)
+                for i, a in enumerate(e["acts"]):
+                    ac[i, : len(a)] = torch.from_numpy(a).to(dev)
+                    mk[i, : len(a)] = True
+                ob = torch.from_numpy(np.stack(e["belief"])).to(dev)
+                oracle_values[ei] = [
+                    float(v) for v in net.oracle_value(st, ac, mk, ob)
+                ]
+
+    for ei, e in enumerate(episodes):
+        base = oracle_values.get(ei, e["value"])
+        adv, ret = _gae(base, e["score"], phi=e.get("phi"))
         for i, acts in enumerate(e["acts"]):
             A = len(acts)
             padded = np.zeros((max_a, act_dim), dtype=np.float32)
@@ -302,6 +337,11 @@ def _update(net, episodes: List[Dict], lr: float, epochs: int,
                 belief, B[idx])
             loss = (p_loss + vf_coef * v_loss - ent_coef * e_loss
                     + belief_coef * b_loss)
+            if getattr(net, "oracle_dim", 0):
+                # The privileged critic is fit to the same returns; it
+                # is only ever read to form advantages, never at play.
+                ov = net.oracle_value(S[idx], A_[idx], M[idx], B[idx])
+                loss = loss + vf_coef * ((ov - RET[idx]) ** 2).mean()
             if not torch.isfinite(loss):
                 continue
             opt.zero_grad()
@@ -361,13 +401,14 @@ def train_joint(
     minibatch: int = 512,
     probe_games: int = 300,
     rollback_bar: float = 1.0,
+    oracle: bool = True,
     progress_path: str = os.path.join(HERE, "..", "joint_progress.jsonl"),
 ) -> None:
     import torch
 
     workers = workers or max(2, min(14, (os.cpu_count() or 8) - 2))
     payloads = {name: _load_payload(name) for name in LINEAGE}
-    nets = {name: _build(p) for name, p in payloads.items()}
+    nets = {name: _build(p, oracle=oracle) for name, p in payloads.items()}
     baseline = {name: probe_vs_diet(net, probe_games, seed=7)
                 for name, net in nets.items()}
     print("[joint] diet baseline: "
@@ -382,8 +423,11 @@ def train_joint(
         blobs = {}
         for name, net in nets.items():
             p = payloads[name]
+            # Workers play, they do not learn: ship them the ordinary
+            # net only -- the privileged critic never leaves training.
             blobs[name] = pickle.dumps({
-                "state_dict": net.state_dict(),
+                "state_dict": {k: v for k, v in net.state_dict().items()
+                               if not k.startswith("oracle_")},
                 "d_model": p["d_model"], "heads": p["heads"],
                 "layers": p["layers"], "state_dim": p["state_dim"],
                 "act_dim": p["act_dim"],
@@ -424,7 +468,11 @@ def train_joint(
                                    for k, v in net.state_dict().items()}
                 baseline[name] = max(baseline[name], score)
                 p = payloads[name]
-                torch.save({"state_dict": net.state_dict(),
+                full = net.state_dict()
+                torch.save({"state_dict": {k: v for k, v in full.items()
+                                           if not k.startswith("oracle_")},
+                            "oracle_state": {k: v for k, v in full.items()
+                                             if k.startswith("oracle_")},
                             "d_model": p["d_model"], "heads": p["heads"],
                             "layers": p["layers"],
                             "meta": {"joint_batch": batch + 1,
