@@ -93,7 +93,9 @@ def make_ai(name: str, seed: Optional[int] = None) -> Strategy:
             return NNPolicy.load(_policy_path("evo_mlp.npz"))
         except Exception:
             return SmartHeuristic()
-    if name in ("wangbot2", "sicario", "leonidas", "khabib"):
+    if name in ("wangbot2", "sicario", "leonidas", "khabib",
+                "v2_patient", "v2_adversarial", "v2_self_trained",
+                "v2_human_trained"):
         # The chain finals (2026-08-18): the locked default table.
         # torch locally, numpy port on serverless; either way the bot
         # plays in its deployed shape — the tree (exact solver +
@@ -103,8 +105,15 @@ def make_ai(name: str, seed: Optional[int] = None) -> Strategy:
         # policy-file entry are deliberately unchanged, so records,
         # leaderboard filters and saved games keep resolving exactly as
         # before -- only the network behind the seat differs.
+        # The v2_* kinds are the depth-program canonical names
+        # (docs/DEPTH_PROGRAM.md): admin-visible aliases of the same
+        # lineage, plus the new AWR-trained patient model.
         stems = {"wangbot2": "wangbot_v2", "sicario": "khabib_v1",
-                 "leonidas": "leonidas_v1", "khabib": "khabib_v1"}
+                 "leonidas": "leonidas_v1", "khabib": "khabib_v1",
+                 "v2_patient": "v2_patient",
+                 "v2_adversarial": "sicario_v1",
+                 "v2_self_trained": "leonidas_v1",
+                 "v2_human_trained": "khabib_v1"}
         policy = None
         try:
             from big2.neural import PPOPolicy
@@ -169,6 +178,7 @@ def make_ai(name: str, seed: Optional[int] = None) -> Strategy:
 
 AI_KINDS = [
     "wangbot2", "sicario", "leonidas", "khabib",
+    "v2_patient", "v2_adversarial", "v2_self_trained", "v2_human_trained",
     "smart", "ppo", "ppo11", "evo", "dmc", "ismcts", "decomp", "linear",
     "dumper", "lowest", "highest", "random",
 ]
@@ -640,6 +650,28 @@ def recorded_games(body: Dict) -> Dict:
     rows = get_store().export_rows(limit) if hasattr(
         get_store(), "export_rows") else []
     return {"games": rows}
+
+
+def delete_recorded(body: Dict) -> Dict:
+    """Admin: remove recorded games by id, or every game for one user.
+
+    Two-step by design: without ``confirm`` it reports exactly what
+    would go, so the caller sees the damage before authorising it.
+    Deletion is permanent -- the replays are not archived elsewhere.
+    """
+    from big2.store import get_store
+
+    ids = body.get("ids") or []
+    username = (body.get("username") or "").strip() or None
+    if not ids and not username:
+        raise ValueError("give ids or a username")
+    store = get_store()
+    doomed = store.preview_delete(ids, username)
+    if not body.get("confirm"):
+        return {"confirmed": False, "would_delete": len(doomed),
+                "games": doomed[:50]}
+    n = store.delete_games(ids, username)
+    return {"confirmed": True, "deleted": n}
 
 
 def analyze(body: Dict) -> Dict:
