@@ -117,6 +117,20 @@
     background: var(--danger); border-radius: 999px; padding: 2px 8px; display: none;
   }
   .opp.passed .badge { display: block; }
+  /* Thinking: a small ring on the seat currently deciding, so plays
+     read as considered rather than arriving all at once. */
+  .opp .spinner {
+    position: absolute; top: 9px; left: 9px; width: 13px; height: 13px;
+    border: 2px solid var(--line); border-top-color: var(--accent);
+    border-radius: 50%; display: none;
+  }
+  .opp.thinking .spinner { display: block; animation: oppSpin .72s linear infinite; }
+  .opp.thinking { border-color: var(--accent); }
+  .opp.thinking .name { color: var(--accent); }
+  @keyframes oppSpin { to { transform: rotate(360deg); } }
+  @media (prefers-reduced-motion: reduce) {
+    .opp.thinking .spinner { animation-duration: 2.4s; }
+  }
   .opp .last { font-size: .7rem; color: var(--muted); min-height: 1em; }
   .opp .beliefs { margin-top: 7px; border-top: 1px dashed var(--line); padding-top: 6px; }
   /* Admin face-up: the whole table's hands, rendered small under each
@@ -438,6 +452,15 @@ let S = null;            // latest authoritative server view
 let FS = null;           // full serialized game state (echoed to the
                          // stateless API with every request)
 let seenHistory = 0;     // history entries already shown in the log
+let thinkingSeat = null; // seat showing the thinking ring, if any
+
+// How long a seat appears to deliberate.  Bigger plays and passes read
+// as harder decisions, and a little jitter keeps three seats in a row
+// from feeling like a metronome.
+function thinkMs(h) {
+  const base = h.cards ? (h.cards.length >= 5 ? 620 : 460) : 540;
+  return base + Math.floor(Math.random() * 260);
+}
 let selected = new Set();
 let sortMode = "rank";
 let busy = false;
@@ -679,8 +702,10 @@ function renderOpponents(view) {
     d.dataset.seat = p.seat;
     if (!view.over && view.turn === p.seat) d.classList.add("active");
     if (p.passed) d.classList.add("passed");
+    if (p.seat === thinkingSeat) d.classList.add("thinking");
     d.innerHTML = `
       <div class="badge">PASSED</div>
+      <div class="spinner" aria-hidden="true"></div>
       <div class="name">${p.name}</div>
       <div class="count">${p.cards}<small> cards</small></div>
       <div class="last">${p.last || ""}</div>`;
@@ -973,7 +998,17 @@ async function applyState(state) {
   for (let i = 0; i < fresh.length; i++) {
     const h = fresh[i];
     const isHuman = h.player === S.human_seat;
-    if (!isHuman) setStatus(`${h.name} ${h.cards ? "plays…" : "passes"}`);
+    if (!isHuman) {
+      // Think first, then play.  The server has already decided, but
+      // revealing three moves at once reads as one event; a beat of
+      // visible deliberation per seat makes the table feel alive.
+      thinkingSeat = h.player;
+      setStatus(`${h.name} is thinking…`);
+      renderOpponents(viewFromState(state, counts, lastActions, passed));
+      await sleep(thinkMs(h));
+      thinkingSeat = null;
+      setStatus(`${h.name} ${h.cards ? "plays…" : "passes"}`);
+    }
     if (h.cards) {
       counts[h.player] -= h.cards.length;
       for (const s of Object.keys(passed)) {
@@ -991,7 +1026,7 @@ async function applyState(state) {
     hideTrick = false;
     renderOpponents(viewFromState(state, counts, lastActions, passed));
     renderTable(tableCombo, tableBy);
-    if (!isHuman) await sleep(h.cards ? 550 : 300);
+    if (!isHuman) await sleep(h.cards ? 320 : 200);
     if (h.trick_end && !(state.phase === "over" && i === fresh.length - 1)) {
       // let the winning play linger in front of its player, then reset
       await sleep(600);
@@ -1004,6 +1039,7 @@ async function applyState(state) {
   }
 
   busy = false;
+  thinkingSeat = null;      // never leave a ring spinning
   // Final authoritative render.
   renderLog(state.history.length);
   hideTrick = state.history.length > 0 &&
