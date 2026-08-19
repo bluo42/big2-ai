@@ -1,0 +1,491 @@
+\documentclass[11pt]{article}
+\usepackage[margin=1in]{geometry}
+\usepackage{amsmath,amssymb}
+\usepackage{booktabs}
+\usepackage{graphicx}
+\usepackage{hyperref}
+\usepackage{natbib}
+
+\title{Policy-Guided Information-Set Search in Four-Player Imperfect
+Information Card Games: An Empirical Study in Big~2}
+
+\author{%
+  Brandon Luo\\
+  \texttt{bluo42/big2-ai}
+  \and
+  Claude (Anthropic)\\
+  \texttt{engineering and analysis}
+}
+
+\date{August 2026}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+We report an empirical study of combining proximal policy optimization
+(PPO) with information-set Monte Carlo tree search (IS-MCTS) in Big~2,
+a four-player imperfect-information climbing card game with a
+$\sim 10^{18}$ information-set space and no partnership structure. Over
+a sequence of controlled experiments we ablate nine engineered feature
+blocks against a paired evaluation protocol, measure where search
+actually changes decisions, and evaluate the resulting agents against
+each other and against 570 recorded games from human players. Four
+findings stand out. First, \emph{search-assisted rollouts during
+training did not pay}: in six paired comparisons across two independent
+lineages, training with the tree in the loop cost $0.03$--$0.40$
+points/game relative to policy-only training at $8$--$12\times$ the
+wall-clock. Second, once a policy is trained on a sufficiently diverse
+opponent diet, \emph{IS-MCTS and the policy converge}: the search
+overrides the policy on only $0.4\%$ of in-distribution decisions, a
+figure invariant to a $32\times$ increase in simulations, a $3.5\times$
+reduction in override margin, deeper playouts, and horizon changes ---
+but it doubles against out-of-distribution opponents. Third,
+\emph{evaluation noise in four-player card games is severe enough to
+invert conclusions}: single-seed 600-game evaluations of the same fixed
+checkpoint spanned $-0.03$ to $+2.09$ points/game, and one feature block
+was rejected and then reinstated after re-adjudication under a paired
+three-seed protocol. Fourth, the trained agents are \emph{strongly
+non-transitive}: a 35-composition round-robin over $35{,}000$ games
+exhibits a rock-paper-scissors cycle among three agents whose pairwise
+margins reverse depending on table composition. We close with the
+implications for bridge and mahjong.
+\end{abstract}
+
+\section{Introduction}
+
+Perfect-information game search has a mature theory; imperfect
+information does not, and the four-player non-partnership setting is
+particularly awkward. Determinized search (PIMC) is known to suffer
+strategy fusion and non-locality \citep{frank1998,long2010}, yet it
+remains competitive in practice. Deep RL systems for card games ---
+DouZero \citep{zha2021}, PerfectDou \citep{yang2022}, Suphx
+\citep{li2020} --- typically train a policy or value network with
+self-play and either omit search at play time or add it late. Which
+component actually carries the strength, and where, is rarely measured
+directly.
+
+This paper is an engineering-grade empirical answer to that question in
+one domain. Big~2 (\emph{Deuces}, \begin{CJK}{UTF8}{gbsn}锄大地\end{CJK})
+is a four-player climbing game: 52 cards dealt evenly, players shed
+singles, pairs, and five-card poker hands in ascending order, and the
+first player out collects the others' remaining cards under a tiered
+multiplier. It is imperfect-information, non-partnership, has a
+combinatorially awkward action space ($\sim 10^2$ legal moves in the
+opening), and --- crucially for this study --- collapses into an
+exactly solvable perfect-information-like endgame once few enough cards
+remain.
+
+Our contributions are empirical rather than algorithmic:
+
+\begin{enumerate}
+\item A \textbf{feature-ablation ladder} that adds engineered blocks one
+  at a time under a paired gate, showing that endgame-danger features
+  pay on every lineage tested, planning/dominance features pay on one
+  lineage and hurt on another, and cross-game opponent inference pays
+  nowhere.
+\item A \textbf{negative result on search-in-training}, consistent in
+  sign across six paired comparisons.
+\item A \textbf{decision census} localizing where search and exact
+  solving actually change play.
+\item A \textbf{non-transitivity measurement} over all 35 four-seat
+  compositions of four trained agents.
+\item A \textbf{human-deviation study} over 570 recorded games
+  identifying the residual leak as early-hand patience, not endgame
+  tactics.
+\end{enumerate}
+
+\section{Testbed and evaluation}
+
+\paragraph{Rules.} Ranks $3 < 4 < \cdots < K < A < 2$; suits
+$\diamondsuit < \clubsuit < \heartsuit < \spadesuit$. The holder of
+$3\diamondsuit$ opens and must include it. Legal plays are singles,
+pairs, and five-card hands (straight $<$ flush $<$ full house $<$ quads
+$<$ straight flush); lone triples are disabled. Passing is soft: a pass
+skips the turn but the player may re-enter when the trick returns.
+Payout: losers pay the winner their remaining card count, doubled at
+$\geq 10$ cards and tripled at 13.
+
+\paragraph{Scoring metric.} All results are mean points/game from a
+rotated seat. Because Big~2 is zero-sum across four seats, a score of
+$0$ means parity with the field, and $\pm 1$ point/game is a large
+margin (a typical decisive game swings $5$--$15$ points).
+
+\paragraph{The evaluation-variance problem.} Our initial gate used one
+seed and 600 games. A variance audit of two \emph{fixed} checkpoints
+across three seeds produced the scores in Table~\ref{tab:variance}.
+
+\begin{table}[h]
+\centering
+\begin{tabular}{lccc}
+\toprule
+Checkpoint & seed 11 & seed 22 & seed 33 \\
+\midrule
+A/plan (600 games) & $-0.033$ & $+1.777$ & $+2.087$ \\
+A/beatprob (600 games) & $+0.083$ & $+1.748$ & $+2.277$ \\
+A/plan (1500 games) & $+0.340$ & $+1.481$ & $+1.241$ \\
+A/beatprob (1500 games) & $+0.434$ & $+1.423$ & $+1.610$ \\
+\bottomrule
+\end{tabular}
+\caption{The same fixed checkpoints re-evaluated across seeds. Absolute
+scores swing by more than 2 points/game; the seed drives both deal
+sequence and opponent draw, so it is a table-composition effect, not
+merely deal luck.}
+\label{tab:variance}
+\end{table}
+
+The correct protocol is therefore \emph{paired}: identical seeds for
+both checkpoints, differences averaged across seeds. Under
+$3 \times 1500$ paired games the difference standard deviation falls to
+$\approx 0.2$ points/game. One feature block (\S\ref{sec:ladder}) was
+rejected under the single-seed gate and reinstated under the paired
+one; we regard single-seed evaluation in this domain as unusable.
+
+\section{Agent architecture}
+
+The policy is a set-attention pointer network: the state and each legal
+move are embedded by two-layer MLPs to width $d$, summed, passed
+through masked multi-head self-attention over the candidate-move set,
+and scored by a linear head. Three heads share the trunk: a policy
+pointer over moves, a value head, and a 156-dimensional belief head
+(per-opponent card posterior) trained as an auxiliary loss.
+
+\paragraph{Attention depth.} All shipped models use two attention
+blocks. The second block is added to an existing checkpoint with a
+zero-initialized output projection under a pre-norm residual, making
+the widened network \emph{bit-identical} to its predecessor at
+initialization (verified: max logit difference $0.00$). After
+$\sim 160$k games of training the second block's output projection had
+grown to weight norm $53.5$ versus $11.9$ for the original block,
+indicating that gradient flow moved the bulk of move-interaction
+processing into the new block.
+
+\paragraph{Feature blocks.} Move-side features, in the order they were
+introduced historically:
+\begin{itemize}
+\item \textbf{base} (296 dims): DouZero-style action encoding, analytic
+  beliefs from deterministic card exclusion, hand-structure and
+  decomposition proxies, payment-tier risk, plus a linear champion's
+  feature vector and scalar advice.
+\item \textbf{danger} ($+14$): thresholded opponent card counts
+  (exactly 1, 2, $\leq 3$), which seat is nearly out, cheap-single-gift
+  detection, can-anyone-go-out-on-this-combo-size.
+\item \textbf{plan} ($+16$ move, $+24$ state): exact boss detection (is
+  this move unbeatable given the unseen set --- the ``free turn''),
+  guaranteed-win, keeps-the-lead, wastes-control, race margin, denial
+  vs.\ gift, share of unseen mass above the move; plus run-out summary
+  and opponent-read state features.
+\item \textbf{profiles} ($+24$ state): cross-game opponent style
+  estimates on a 500-game EMA.
+\item \textbf{beat-risk} ($+4$): per candidate move, $P(\text{next
+  opponent can answer})$, $P(\text{any opponent can answer})$,
+  $E[\#\text{answerers}]$, and $P(\text{any opponent holds the
+  class})$, computed by uniform Monte Carlo over consistent deals of
+  the unseen pool. This is deliberately \emph{low-bias}: deterministic
+  exclusion of played cards plus a uniform prior, no learned or
+  play-evidence inference. It makes the flush-versus-straight decision
+  directly visible to the network.
+\end{itemize}
+
+\section{Play-time search}
+
+The deployed agent is a single decision procedure with no stage switch:
+
+\begin{enumerate}
+\item \textbf{Forced moves} are played immediately.
+\item \textbf{Exact solving.} If a move empties the hand and is
+  unbeatable given the unseen set, it is played on the spot. Below 14
+  total cards, every candidate is evaluated by max$^n$ search to
+  terminal states over belief-sampled worlds (weighted PIMC), with a
+  node budget, a wall-clock deadline, and an agreement threshold; a
+  process-level transposition cache retains only \emph{exactly} solved
+  positions, so repeated endings are answered from the table.
+\item \textbf{IS-MCTS} elsewhere: PUCT selection with the policy as
+  prior, candidate set pruned to the moves covering $90\%$ of prior
+  mass (at most 6), determinized worlds drawn per simulation,
+  opponents' in-tree replies sampled from the agent's own policy,
+  playouts truncated at the player's next decision --- or earlier, the
+  moment a trick resolves with the player holding the fresh lead, since
+  that is the highest-leverage state to price --- and leaves evaluated
+  by the value head or solved exactly when in range.
+\item \textbf{Margin.} The search's move is played only if its measured
+  advantage over the policy's move exceeds a threshold.
+\end{enumerate}
+
+\section{Experiments}
+
+\subsection{The feature ladder}
+\label{sec:ladder}
+
+Two lineages were rebuilt from scratch at $d=192$ with two attention
+blocks: lineage~A warm-started from the original PPO champion,
+lineage~B from a trained exploiter (an agent trained as a best response
+to the champion). Each stage trains $120$k games with one additional
+feature block, zero-initialized at the input layer, then gates on the
+paired champions-room score. Table~\ref{tab:ladder} reports the
+outcome.
+
+\begin{table}[h]
+\centering
+\begin{tabular}{lcc}
+\toprule
+Block & Lineage A & Lineage B \\
+\midrule
+base (diet only) & $+0.985$ abs. & $+1.217$ abs. \\
+danger & \textbf{kept} $+0.587$ & \textbf{kept} $+0.148$ \\
+plan & \textbf{kept} $+0.158$ & \textbf{dropped} $-0.193$ \\
+profiles & removed by design & removed by design \\
+beat-risk & \textbf{kept} $+0.135^{\dagger}$ & not applicable \\
+search-in-training & \textbf{dropped} $-0.288^{\dagger}$ & \textbf{dropped} $-0.154^{\dagger}$ \\
+\bottomrule
+\end{tabular}
+\caption{Feature-ladder verdicts, gains in points/game.
+$^{\dagger}$paired $3\times1500$ protocol; earlier rows used the
+single-seed 600-game gate and should be read as indicative only. The
+beat-risk block was rejected by the single-seed gate ($-0.160$) and
+reinstated by the paired one ($+0.135$).}
+\label{tab:ladder}
+\end{table}
+
+Three observations. (i) The \emph{diet} mattered more than any feature:
+simply training against a weighted draw from the full model collection
+(all scripted baselines, linear and evolutionary champions, both
+shipped networks, a humanlike clone, and a dedicated exploiter, with
+the models-to-beat at double weight) moved lineage~A from $+0.26$ to
+$+0.99$ before any new feature was added. (ii) Endgame-danger features
+pay on both lineages. (iii) The planning block's value is
+\emph{lineage-dependent}: kept on A, harmful on B, which we attribute
+to the exploiter lineage having already internalized dominance
+reasoning in its weights.
+
+\paragraph{Opponent profiles.} We removed the cross-game opponent-style
+block on principle (it is inference over opponent identity, not game
+state) and then discovered it had been \emph{structurally inert}: the
+profile inputs were populated only during training rollouts and were
+zero in every evaluation, confirmation, and deployment path. The
+network had been fitting a signal it never sees at test time.
+
+\subsection{Search in training does not pay}
+
+Each lineage's final feature configuration was trained a further $120$k
+games with IS-MCTS in the rollout loop (the learner's own seats
+consult the tree below 26 cards; opponents play raw policies), then
+gated against its own predecessor under the paired protocol. All six
+paired seed-level differences were negative:
+
+\begin{center}
+\begin{tabular}{lccc c}
+\toprule
+& seed 11 & seed 22 & seed 33 & mean \\
+\midrule
+A: search $-$ no-search & $-0.083$ & $-0.377$ & $-0.403$ & $-0.288$ \\
+B: search $-$ no-search & $-0.029$ & $-0.192$ & $-0.239$ & $-0.154$ \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+The cost is also large: rollout throughput fell from $\sim 140$
+games/second (policy-only, $d{=}192$, 20 workers) to $12$--$19$
+games/second. We offer two hypotheses. First, PPO's importance ratio is
+anchored to the policy that generated the batch; when the executed move
+comes from the tree, the behaviour and target distributions separate,
+and the clipped objective is being asked to learn from off-policy
+actions it was not designed for. Second, and consistent with
+\S\ref{sec:census}, the tree changes so few decisions that the signal
+it injects is small relative to the variance it adds.
+
+\subsection{Where search actually acts}
+\label{sec:census}
+
+We instrumented 300 games per configuration, recording every decision's
+source. Table~\ref{tab:census} gives the breakdown by cards remaining.
+
+\begin{table}[h]
+\centering
+\begin{tabular}{lrrrrr}
+\toprule
+Cards left & forced & policy & search override & solver & $n$ \\
+\midrule
+52--40 & 194 & 578 & --- & --- & 772 \\
+39--27 & 379 & 674 & --- & --- & 1053 \\
+26--23 & 167 & 183 & 5 & 0 & 355 \\
+22--19 & 201 & 152 & 1 & 2 & 356 \\
+18--15 & 207 & 145 & 2 & 4 & 358 \\
+14--1 & 345 & 26 & 4 & 155 & 530 \\
+\midrule
+total & 43.6\% & 51.4\% & \textbf{0.4\%} & 4.7\% & 3424 \\
+\bottomrule
+\end{tabular}
+\caption{Decision sources by cards remaining (search enabled below 26).
+Rows 1--2 are outside the search band.}
+\label{tab:census}
+\end{table}
+
+The override rate is remarkably stable: $0.4\%$ at 32 simulations with
+a $0.35$ margin, $0.4\%$ at 128 simulations with a $0.10$ margin,
+$0.4\%$ at 256 simulations, and $0.4\%$ at depth 16 with the
+trick-boundary cutoff disabled --- a $32\times$ compute range and a
+$3.5\times$ margin range with no measurable effect. Against a weak,
+out-of-distribution room (scripted heuristics, a linear champion, and a
+random player) the rate doubles to $0.9\%$, and the character of the
+overrides changes: substitutions of one single for another give way to
+\emph{single $\rightarrow$ pass} corrections.
+
+The exact solver, by contrast, is decisive: $155$ of the $167$ active
+(non-forced, non-policy) interventions occur at $\leq 14$ cards, where
+it makes $81\%$ of all non-forced decisions, and roughly half of its
+moves are \emph{boss} plays --- provably unbeatable singles, pairs, or
+five-card hands. We read this as: \emph{the value of "search" in this
+domain is overwhelmingly the value of exact endgame solving}, and the
+sampled tree above it functions mainly as a verifier of an already
+well-trained policy.
+
+\subsection{Non-transitivity}
+
+We ran all $\binom{4+3}{4} = 35$ multisets of four agents over the four
+seats, $1000$ games each with seats reshuffled per game, plus reference
+matches against triples of the two shipped predecessors. The agents are
+A (full stack), B (lean/exploiter lineage), C (a humanlike-anchored
+agent trained with an imitation loss toward a clone of strong human
+players), and D (trained explicitly against A, B, and C at one table).
+
+The pairwise structure is cyclic: B outscores A ($+0.40$ vs $-0.13$
+with three A seats and one B), A dominates C ($+0.95$ vs $-0.32$),
+and C punishes B ($+0.68$ vs $-0.15$). Composition matters
+independently of pairwise strength: B, the strongest agent
+head-to-head against both shipped predecessors ($+0.94$ and $+0.59$),
+is the \emph{worst} performer at the all-different table
+($-0.51$). Agent D, trained specifically to beat the other three,
+achieved only small edges ($+0.17$ to $+0.27$) --- confirming the
+project's prior that a well-trained field is hard to exploit --- but
+paid for its specialization with $-0.66$ against a mirror room of the
+older champion.
+
+\subsection{Objective blunders}
+
+We measure three solver-verified error classes that require no
+judgment: playing something other than an available guaranteed win;
+gifting a beatable move to a player one card from out while holding an
+unanswerable alternative; and spending a beatable move while holding a
+boss unit with an opponent two cards from out. Over $\sim 1650$
+decisions per agent, all three shipped agents record \textbf{0.00
+missed guaranteed wins} per 100 decisions and $0.00$--$0.36$ gifts, but
+$1.5$--$2.2$ wasted-boss errors. The endgame is solved; control timing
+is not.
+
+\subsection{Human study}
+
+Against 570 recorded games from human players, we replayed every
+decision where a human diverged from the agent, played both choices out
+over belief-sampled deals, and kept those where the human's move
+measurably won. Humans diverged at 378 decisions and were measurably
+better at 163 ($43\%$). The two dominant corrections were \emph{pass
+instead of playing a single} (58 cases) and \emph{play a lower single}
+(47 cases; the humans' card averaged $0.66$ ranks lower). By stage:
+76 early ($>36$ cards), 64 middle, and only 23 late ($\leq 20$). The
+residual human edge is early-hand patience and rank conservation ---
+precisely the region where the exact solver cannot reach and where, per
+\S\ref{sec:census}, the tree almost never overrides.
+
+\section{Discussion}
+
+The picture that emerges is that in a four-player climbing game with a
+strong learned prior, the components divide cleanly by horizon.
+\emph{Exact solving} owns the endgame and is worth every cycle:
+zero missed guaranteed wins, half of its moves provably unbeatable.
+\emph{The learned policy} owns the opening and midgame, and once its
+training diet is diverse enough, a sampled tree at 250\,ms
+per move can barely improve on it in-distribution. \emph{The tree} is
+best understood not as a strength multiplier but as
+\emph{insurance}: its override rate doubles and its corrections become
+qualitatively different (patience rather than substitution) exactly
+when the opponents leave the training distribution --- which is the
+situation a deployed agent faces against humans.
+
+This suggests a deployment policy that differs from the training
+policy, and our final configuration reflects it: policy-only training
+(fast, stable), then search at every decision at play time, where the
+opponents are unknown and a second opinion is cheap.
+
+Two methodological lessons generalize beyond Big~2. First, in
+four-player games the evaluation seed determines table composition, and
+composition effects are large enough to reverse conclusions; paired
+multi-seed evaluation is not optional. Second, engineered features must
+be validated in the pipeline that will actually run them --- our
+opponent-profile block trained on inputs that were identically zero at
+evaluation time, an error invisible to training curves.
+
+\section{Future work: bridge and mahjong}
+
+Two natural next domains stress different parts of this design.
+
+\paragraph{Bridge} adds a partnership and an explicit communication
+channel. The bidding phase is a cheap-talk game where the information
+content of a bid is conventional rather than physical, so the
+belief head would need to model \emph{partner's model of us}, not just
+card distributions. Our finding that search functions as
+out-of-distribution insurance is especially relevant: against
+unfamiliar conventions, a determinized search whose world sampler
+respects the auction is precisely the safety net that a policy trained
+on a fixed convention set would lack. The exact-solving result should
+transfer directly --- double-dummy solvers are mature, and the
+analogous claim would be that a policy plus double-dummy endgame beats
+a policy alone by more than a sampled tree adds in the middle game.
+
+\paragraph{Mahjong} preserves the four-player non-partnership structure
+that motivated this study, while replacing the climbing dynamic with
+set collection under a wall of hidden tiles and interrupt-driven turn
+order (pon/chi/kan). Suphx \citep{li2020} established that deep RL with
+oracle distillation is competitive; what our results suggest is worth
+testing there is (i) whether the same policy--search convergence
+appears once the opponent diet is sufficiently diverse, (ii) whether
+mahjong's much larger hidden-state space pushes the crossover point
+where sampled search stops agreeing with the policy, and (iii) whether
+an exactly solvable endgame region exists at all --- if it does not,
+our conclusion that ``search value is mostly solver value'' would
+predict a substantially different component balance. Mahjong's
+per-seat scoring cliffs (yakuman, riichi sticks) also make the tiered
+payout structure we studied here a natural precursor.
+
+\section{Limitations}
+
+Our evaluation pool is largely self-referential: agents are scored
+against other agents from the same project, and absolute scores are not
+comparable to published Big~2 systems. The human study covers 570 games
+from a small number of players. All measurements come from a single
+hardware configuration, and search-cost conclusions are therefore
+compute-relative. Finally, the training runs reported here are short by
+the standards of the field ($10^5$ games, not $10^7$); the negative
+result on search-in-training may not hold at scale, where the policy
+has more capacity to absorb the tree's corrections.
+
+\paragraph{Reproducibility.} All code, trained checkpoints, evaluation
+harnesses, and the tournament and census scripts are available at
+\url{https://github.com/bluo42/big2-ai}.
+
+\begin{thebibliography}{9}
+\bibitem[Frank \& Basin(1998)]{frank1998} I.~Frank and D.~Basin.
+  Search in games with incomplete information. \emph{Artificial
+  Intelligence}, 1998.
+\bibitem[Long et al.(2010)]{long2010} J.~Long, N.~Sturtevant,
+  M.~Buro, and T.~Furtak. Understanding the success of perfect
+  information Monte Carlo sampling. \emph{AAAI}, 2010.
+\bibitem[Zha et al.(2021)]{zha2021} D.~Zha et al. DouZero: Mastering
+  DouDizhu with self-play deep reinforcement learning. \emph{ICML},
+  2021.
+\bibitem[Yang et al.(2022)]{yang2022} G.~Yang et al. PerfectDou:
+  Dominating DouDizhu with perfect information distillation.
+  \emph{NeurIPS}, 2022.
+\bibitem[Li et al.(2020)]{li2020} J.~Li et al. Suphx: Mastering
+  Mahjong with deep reinforcement learning. arXiv:2003.13590, 2020.
+\bibitem[Brown \& Sandholm(2019)]{brown2019} N.~Brown and
+  T.~Sandholm. Superhuman AI for multiplayer poker. \emph{Science},
+  2019.
+\bibitem[Schmid et al.(2021)]{schmid2021} M.~Schmid et al. Player of
+  Games. arXiv:2112.03178, 2021.
+\bibitem[Charlesworth(2018)]{charlesworth2018} H.~Charlesworth.
+  Application of self-play reinforcement learning to a four-player
+  game of imperfect information. arXiv:1808.10442, 2018.
+\end{thebibliography}
+
+\end{document}

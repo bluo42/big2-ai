@@ -108,6 +108,22 @@ def simulate():
     return _handle(webapi.simulate)
 
 
+@app.route("/api/recorded", methods=["POST"])
+def recorded():
+    # Admin explorer: real recorded hands, replays included.
+    if not _admin_request_ok():
+        abort(404)
+    return _handle(webapi.recorded_games)
+
+
+@app.route("/api/analyze", methods=["POST"])
+def analyze():
+    # Admin explorer: per-position model analysis and POV beliefs.
+    if not _admin_request_ok():
+        abort(404)
+    return _handle(webapi.analyze)
+
+
 @app.route("/api/progress")
 def progress():
     if not _admin_request_ok():

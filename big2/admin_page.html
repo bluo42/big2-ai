@@ -155,6 +155,21 @@
     </div>
 
     <div class="panel">
+      <h2>Recorded games
+        <button id="loadRecordedBtn" style="float:right;padding:2px 10px;font-size:.72rem">load</button>
+      </h2>
+      <div class="row">
+        <label>analyze with</label>
+        <select id="analyzeModel"></select>
+        <span class="check"><input type="checkbox" id="analyzeOn" checked><label>live analysis</label></span>
+      </div>
+      <div id="recordedList" style="max-height:190px;overflow:auto"><table>
+        <thead><tr><th>#</th><th>player</th><th>score</th><th>vs</th></tr></thead>
+        <tbody id="recordedBody"></tbody>
+      </table></div>
+    </div>
+
+    <div class="panel">
       <h2>Games
         <button id="loadPlayedBtn" style="float:right;padding:2px 10px;font-size:.72rem"></button>
       </h2>
@@ -195,6 +210,13 @@
           <span id="pos"></span>
         </div>
         <div class="panel" id="summary"></div>
+        <div class="panel" id="analysisPane" style="display:none">
+          <h2>Position analysis <span id="anStatus" style="float:right;font-size:.68rem;color:var(--muted)"></span></h2>
+          <div id="anHead" style="font-size:.78rem;margin-bottom:8px"></div>
+          <div id="anOptions"></div>
+          <h2 style="margin-top:14px">Beliefs from this seat</h2>
+          <div id="anBeliefs"></div>
+        </div>
       </div>
       <div id="log"></div>
     </div>
@@ -205,12 +227,26 @@
 "use strict";
 const RANKS = ["3","4","5","6","7","8","9","10","J","Q","K","A","2"];
 const SUITS = ["♦","♣","♥","♠"];
-const AI_KINDS = ["ppo","ppo11","evo","smart","dmc","ismcts","decomp","linear","dumper","lowest","highest","random"];
+const AI_KINDS = ["wangbot2","khabib","sicario","leonidas","ppo","ppo11","evo","smart","dmc","ismcts","decomp","linear","dumper","lowest","highest","random"];
+const KIND_LABEL = {wangbot2:"v2", khabib:"Khabib", sicario:"Sicario",
+  leonidas:"Leonidas", ppo:"PPO v1", ppo11:"WangBot_v1"};
 const TYPE_LABEL = {
   SINGLE:"Single", PAIR:"Pair", TRIPLE:"Triple", STRAIGHT:"Straight", FLUSH:"Flush",
   FULL_HOUSE:"Full house", FOUR_OF_A_KIND:"Four of a kind", STRAIGHT_FLUSH:"Straight flush",
 };
 const $ = (id) => document.getElementById(id);
+// Analysis panel styling (52-card posterior grid + class chips).
+document.head.insertAdjacentHTML("beforeend", `<style>
+  .bel { border-top: 1px dashed var(--line); padding: 7px 0; font-size: .74rem; }
+  .bel .cls { color: var(--muted); font-size: .68rem; margin: 3px 0; }
+  .bel .cls b, .bel b { color: var(--text); }
+  .pgrid { display: grid; grid-template-columns: repeat(13, 1fr); gap: 2px; margin-top: 4px; }
+  .pcard { font-size: .58rem; text-align: center; border-radius: 3px;
+    padding: 2px 0; border: 1px solid #2e385433; }
+  #anOptions th { text-align: left; color: var(--muted); font-weight: 500;
+    font-size: .66rem; text-transform: uppercase; letter-spacing: .06em; }
+  #anOptions td { padding: 3px 4px; border-bottom: 1px solid #2e385455; }
+</style>`);
 const rankOf = (c) => Math.floor(c / 4), suitOf = (c) => c % 4;
 const cardText = (c) => RANKS[rankOf(c)] + SUITS[suitOf(c)];
 
@@ -446,6 +482,137 @@ function render() {
   });
   const curEl = log.querySelector(".cur");
   if (curEl) curEl.scrollIntoView({ block: "nearest" });
+  analyzePosition();
+}
+
+/* ---------------- recorded games + position analysis ------------- */
+
+let recorded = [];       // rows from /api/recorded
+let anSeq = 0;           // request sequence: late replies are dropped
+
+function fillModelPicker() {
+  const sel = $("analyzeModel");
+  sel.innerHTML = AI_KINDS.map((k) =>
+    `<option value="${k}">${KIND_LABEL[k] || k}</option>`).join("");
+}
+
+async function loadRecorded() {
+  $("loadRecordedBtn").textContent = "…";
+  try {
+    const res = await fetch(withToken("/api/recorded"), {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ token: TOKEN, limit: 100 }),
+    });
+    recorded = res.ok ? (await res.json()).games || [] : [];
+  } catch { recorded = []; }
+  const body = $("recordedBody");
+  body.innerHTML = "";
+  recorded.forEach((g, i) => {
+    const tr = document.createElement("tr");
+    const vs = (g.lineup || []).map((s) => String(s).split("@")[0])
+      .filter((v, j, a) => a.indexOf(v) === j).join(" · ");
+    tr.innerHTML = `<td>${i + 1}</td><td>${g.username}</td>` +
+      `<td class="${g.user_score >= 0 ? "pos" : "neg"}">` +
+      `${g.user_score >= 0 ? "+" : ""}${g.user_score}</td>` +
+      `<td style="font-size:.68rem;color:var(--muted)">${vs}</td>`;
+    tr.style.cursor = "pointer";
+    tr.addEventListener("click", () => {
+      const r = g.replay;
+      r.scores = r.scores || {};
+      openReplay(r);
+    });
+    body.appendChild(tr);
+  });
+  $("loadRecordedBtn").textContent = `load (${recorded.length})`;
+}
+
+function cardChip(c, prob) {
+  const a = 0.06 + 0.94 * prob;
+  return `<span class="pcard" style="background:rgba(79,140,255,${a.toFixed(2)})"` +
+    ` title="${cardText(c)}: ${(100 * prob).toFixed(0)}%">${cardText(c)}</span>`;
+}
+
+async function analyzePosition() {
+  if (!cur || !$("analyzeOn").checked) {
+    $("analysisPane").style.display = "none";
+    return;
+  }
+  $("analysisPane").style.display = "";
+  const seq = ++anSeq;
+  $("anStatus").textContent = "thinking…";
+  let out = null;
+  try {
+    const res = await fetch(withToken("/api/analyze"), {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        token: TOKEN, replay: cur, k: cursor,
+        model: $("analyzeModel").value,
+      }),
+    });
+    out = res.ok ? await res.json() : null;
+  } catch { out = null; }
+  if (seq !== anSeq) return;            // a newer request superseded this
+  if (!out || out.over) {
+    $("anStatus").textContent = "";
+    $("anHead").textContent = out && out.over ? "game over" : "unavailable";
+    $("anOptions").innerHTML = "";
+    $("anBeliefs").innerHTML = "";
+    return;
+  }
+  const d = out.decision || {};
+  $("anStatus").textContent = `${(d.elapsed || 0).toFixed(2)}s`;
+  const played = out.played_move ? out.played_move.map(cardText).join(" ")
+    : (out.played_move === null ? "pass" : "");
+  $("anHead").innerHTML =
+    `<b>${out.seat_name}</b> to act · ${out.cards_left} cards left · ` +
+    `${out.unseen} unseen<br>` +
+    `agent would: <b>${d.move ? d.move.map(cardText).join(" ") : "pass"}</b> ` +
+    `<span style="color:var(--muted)">(${d.source}` +
+    `${d.exact ? ", exact" : ""}${d.margin ? `, margin ${d.margin.toFixed(2)}` : ""})</span>` +
+    (played ? `<br>actually played: <b>${played}</b>` : "");
+
+  // Candidate moves, ranked by the policy, with search and exact EV.
+  const opts = (out.options || []).slice().sort(
+    (a, b) => (b.policy || 0) - (a.policy || 0)).slice(0, 12);
+  const maxEv = Math.max(...opts.map((o) =>
+    Math.abs(o.exact_ev != null ? o.exact_ev : (o.value || 0))), 1e-9);
+  $("anOptions").innerHTML =
+    `<table style="width:100%;font-size:.72rem">
+      <thead><tr><th>move</th><th>policy</th><th>visits</th>
+      <th>search Q</th><th>exact EV</th></tr></thead><tbody>` +
+    opts.map((o) => {
+      const isPlay = d.move && o.cards &&
+        JSON.stringify([...o.cards].sort((x, y) => x - y)) ===
+        JSON.stringify([...d.move].sort((x, y) => x - y));
+      const ev = o.exact_ev != null ? o.exact_ev : null;
+      const bar = ev == null ? "" :
+        `<div style="height:3px;margin-top:2px;background:${ev >= 0 ? "#37c978" : "#e05563"};` +
+        `width:${Math.round(100 * Math.abs(ev) / maxEv)}%"></div>`;
+      return `<tr${isPlay ? ' style="background:#1d2a44"' : ""}>` +
+        `<td>${o.cards ? o.cards.map(cardText).join(" ") : "pass"}` +
+        `${isPlay ? " ◀" : ""}${bar}</td>` +
+        `<td>${o.policy == null ? "" : (100 * o.policy).toFixed(1) + "%"}</td>` +
+        `<td>${o.visits == null ? "" : o.visits}</td>` +
+        `<td>${o.value == null ? "" : o.value.toFixed(3)}</td>` +
+        `<td>${ev == null ? "" : (ev >= 0 ? "+" : "") + ev.toFixed(1)}</td></tr>`;
+    }).join("") + "</tbody></table>";
+
+  // POV beliefs: 52-card posterior + combo classes per opponent.
+  $("anBeliefs").innerHTML = Object.entries(out.beliefs).map(([seat, b]) => {
+    if (b.known_hand) {
+      return `<div class="bel"><b>${b.name}</b> — hand known: ` +
+        b.known_hand.map(cardText).join(" ") + `</div>`;
+    }
+    const cards = Object.entries(b.card_probs)
+      .sort((x, y) => (+x[0]) - (+y[0]));
+    const cls = Object.entries(b.classes)
+      .map(([k, v]) => `${k} <b>${(100 * v).toFixed(0)}%</b>`).join(" · ");
+    return `<div class="bel"><b>${b.name}</b> (${b.cards} cards)` +
+      (b.beat_table == null ? "" :
+        ` · beats table <b>${(100 * b.beat_table).toFixed(0)}%</b>`) +
+      `<div class="cls">${cls}</div>` +
+      `<div class="pgrid">${cards.map(([c, p]) => cardChip(+c, p)).join("")}</div></div>`;
+  }).join("");
 }
 
 function step(delta) {
@@ -567,6 +734,12 @@ async function loadLeaderboard() {
 }
 $("boardBtn").addEventListener("click", loadLeaderboard);
 loadLeaderboard();
+
+fillModelPicker();
+$("loadRecordedBtn").addEventListener("click", loadRecorded);
+$("analyzeModel").addEventListener("change", analyzePosition);
+$("analyzeOn").addEventListener("change", analyzePosition);
+loadRecorded();
 </script>
 </body>
 </html>

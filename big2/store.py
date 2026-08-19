@@ -265,6 +265,33 @@ class Store:
             ],
         }
 
+    def export_rows(self, limit: int = 50) -> List[Dict]:
+        """Recent recorded games with their replays, newest first —
+        the admin explorer's source of real human hands."""
+        out: List[Dict] = []
+        with self._connect() as con:
+            cur = con.cursor()
+            cur.execute(
+                f"SELECT g.id, u.username, g.ts, g.lineup, g.user_seat, "
+                f"g.user_score, g.won, g.replay FROM games g "
+                f"JOIN users u ON u.id = g.user_id "
+                f"ORDER BY g.ts DESC LIMIT {int(limit)}"
+            )
+            for row in cur.fetchall():
+                try:
+                    replay = (json.loads(row[7])
+                              if isinstance(row[7], str) else row[7])
+                except Exception:
+                    continue
+                out.append({
+                    "id": row[0], "username": row[1], "ts": float(row[2]),
+                    "lineup": json.loads(row[3]) if isinstance(row[3], str)
+                    else row[3],
+                    "user_seat": row[4], "user_score": row[5],
+                    "won": row[6], "replay": replay,
+                })
+        return out
+
     def bot_records(self) -> Dict:
         """Per-bot running record against human players.
 

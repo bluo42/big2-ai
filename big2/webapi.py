@@ -607,6 +607,153 @@ def progress(_body: Optional[Dict] = None) -> Dict:
     return {"rows": rows}
 
 
+def recorded_games(body: Dict) -> Dict:
+    """Stored human games, newest first, for the admin explorer."""
+    from big2.store import get_store
+
+    limit = max(1, min(200, int(body.get("limit", 50))))
+    rows = get_store().export_rows(limit) if hasattr(
+        get_store(), "export_rows") else []
+    return {"games": rows}
+
+
+def analyze(body: Dict) -> Dict:
+    """Full analysis of one position in a recorded game.
+
+    Rebuilds the hand at action index ``k``, then reports, from the
+    acting seat's point of view: what each candidate move is worth to
+    the chosen model (policy probability, search visits and values,
+    exact solver EV where the position is solvable), which move the
+    agent would actually play and why, and the seat's beliefs about
+    every opponent -- the 52-card posterior and the combo classes.
+    """
+    import numpy as np
+
+    from big2.beliefs import BeliefState
+    from big2.endgame import move_key, remaining_cards
+    from big2.offline import rebuild_game
+    from big2.opponents import OpponentModel
+
+    replay = body.get("replay") or {}
+    k = int(body.get("k", 0))
+    kind = body.get("model") or "wangbot2"
+    game = rebuild_game(replay)
+    actions = replay.get("actions") or []
+    for act in actions[:k]:
+        if game.game_over:
+            break
+        cards = act.get("cards")
+        try:
+            game.step(None if not cards
+                      else classify([int(c) for c in cards], game.rules))
+        except (ValueError, RuntimeError):
+            break
+    if game.game_over:
+        return {"over": True}
+
+    seat = game.turn
+    options: List[Optional[Combo]] = list(game.legal_moves(seat))
+    if game.can_pass():
+        options.append(None)
+
+    agent = make_ai(kind, seed=0)
+    policy = getattr(agent, "policy", agent)
+
+    # Policy preferences over the candidate set.
+    probs: Dict[str, float] = {}
+    if hasattr(policy, "option_scores"):
+        opts, logits = policy.option_scores(game, seat)
+        arr = np.asarray(logits, dtype=np.float64)
+        arr = np.exp(arr - arr.max())
+        arr = arr / max(arr.sum(), 1e-9)
+        for m, pr in zip(opts, arr):
+            probs[_move_id(m)] = float(pr)
+
+    # What the deployed agent decides here, and its internals.
+    decision: Dict = {}
+    inner = getattr(agent, "agent", None)
+    if inner is not None and hasattr(inner, "explain"):
+        d = inner.explain(game, seat)
+        decision = {
+            "source": d.source,
+            "move": list(d.move) if d.move else None,
+            "margin": float(getattr(d, "margin", 0.0)),
+            "exact": bool(getattr(d, "exact", False)),
+            "elapsed": float(getattr(d, "elapsed", 0.0)),
+            "cards_left": int(getattr(d, "cards_left", 0)),
+            "visits": {str(list(mk)): int(v)
+                       for mk, v in (getattr(d, "visits", {}) or {}).items()
+                       if mk},
+            "values": {str(list(mk)): float(v)
+                       for mk, v in (getattr(d, "values", {}) or {}).items()
+                       if mk},
+        }
+
+    # Exact per-move EV when the position is inside solver range.
+    exact_ev: Dict[str, float] = {}
+    if remaining_cards(game) <= 16:
+        from big2.endgame import solve_move_values
+
+        values, solved = solve_move_values(game, seat, budget=20000)
+        if solved:
+            exact_ev = {str(list(mk) if mk else []): float(v)
+                        for mk, v in values.items()}
+
+    rows = []
+    for m in options:
+        mid = _move_id(m)
+        key = str(list(move_key(m)) if m else [])
+        rows.append({
+            "cards": list(m.cards) if m else None,
+            "type": (m.type.name if m and hasattr(m.type, "name")
+                     else (m.type if m else "pass")),
+            "policy": probs.get(mid),
+            "visits": (decision.get("visits") or {}).get(key),
+            "value": (decision.get("values") or {}).get(key),
+            "exact_ev": exact_ev.get(key),
+        })
+
+    # POV beliefs: the deep 52-card posterior plus combo classes.
+    honesty = OpponentModel(game, seat).honesty_map(game)
+    b = BeliefState(game, seat, pass_honesty=honesty, rng=random.Random(0))
+    cmap = b.card_probability_map()
+    classes = b.class_probabilities(k=150)
+    beat = (b.prob_can_beat(game.table_combo, k=150)
+            if game.table_combo else None)
+    names = {p: (replay.get("players") or [f"seat {p}"] * 4)[p]
+             for p in range(game.num_players)}
+    bel = {}
+    for p in b.opponents:
+        bel[str(p)] = {
+            "name": names.get(p, f"seat {p}"),
+            "cards": len(game.hands[p]),
+            "card_probs": {str(c): float(v) for c, v in cmap[p].items()},
+            "classes": {kk: float(vv) for kk, vv in classes[p].items()},
+            "beat_table": None if beat is None else float(beat[p]),
+            "known_hand": b.known_hand(p),
+        }
+
+    return {
+        "seat": seat,
+        "seat_name": names.get(seat, f"seat {seat}"),
+        "hand": sorted(game.hands[seat]),
+        "cards_left": remaining_cards(game),
+        "table": (list(game.table_combo.cards)
+                  if game.table_combo else None),
+        "played_move": (actions[k].get("cards") if k < len(actions)
+                        else None),
+        "options": rows,
+        "decision": decision,
+        "beliefs": bel,
+        "unseen": b.n_unseen,
+    }
+
+
+def _move_id(move: Optional[Combo]) -> str:
+    return "pass" if move is None else ",".join(
+        str(c) for c in sorted(move.cards))
+
+
 def simulate(body: Dict) -> Dict:
     """Agent-vs-agent games with everything exposed, for the admin viewer."""
     kinds: List[str] = [k for k in (body.get("agents") or []) if k]
