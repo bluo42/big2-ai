@@ -308,8 +308,9 @@ def _update(net, episodes: List[Dict], lr: float, epochs: int,
             loss.backward()
             torch.nn.utils.clip_grad_norm_(net.parameters(), 1.0)
             opt.step()
-            stats = {"pol": float(p_loss), "val": float(v_loss),
-                     "ent": float(e_loss)}
+            stats = {"pol": float(p_loss.detach()),
+                     "val": float(v_loss.detach()),
+                     "ent": float(e_loss.detach())}
     net.to("cpu")
     net.eval()
     return stats
