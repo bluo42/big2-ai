@@ -16,9 +16,10 @@ solver, shortlisted IS-MCTS at high budget, policy) and:
   distribution** (cross-entropy; excluded from the PPO ratio);
 * solver decisions distill as one-hot targets -- provable moves teach;
 * policy decisions are sampled and train by clipped PPO as usual;
-* above MIX_ARGMAX_BELOW cards the executed move is **sampled** from
-  the visits: every model trains as -- and against -- a mixed
-  strategy, the unexploitability requirement;
+* the move played is always the search's best; the visit distribution
+  is the distillation target, not a sampling distribution (mixed play
+  was removed 2026-08-19: it made every seat play worse than it knew
+  how to, muddying both the gradient and the head-to-head read);
 * every decision records the trick-level potential for shaped GAE.
 
 After each batch every model probes against the legacy diet
@@ -225,13 +226,14 @@ def _joint_worker(args):
                             idx = j
                             break
                 elif counts.sum() > 0:
+                    # The visit distribution is still the distillation
+                    # target, but the move PLAYED is always the search's
+                    # best.  Sampling from the visits made every seat
+                    # play a deliberately noisier game than it knows how
+                    # to, which muddies both the training signal and the
+                    # head-to-head read of who is actually stronger.
                     visit_target = (counts / counts.sum()).astype(np.float32)
-                    if _rc(game) > mix_below:
-                        idx = int(np.random.default_rng(
-                            rng.randrange(2 ** 31)).choice(
-                                len(options), p=visit_target))
-                    else:
-                        idx = int(np.argmax(counts))
+                    idx = int(np.argmax(counts))
             except Exception:
                 visit_target = None
             if idx is None:

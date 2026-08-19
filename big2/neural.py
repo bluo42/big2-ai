@@ -75,10 +75,9 @@ SCORE_SCALE = 39.0
 # training entirely.
 SEARCH_CARDS_4P = 26
 SEARCH_CARDS_23P = 18
-# Mixed strategy in search-assisted rollouts: above this many cards
-# left the executed move is SAMPLED from the search's visit
-# distribution (so training sees and plays mixed strategies); at or
-# below it the argmax takes over -- the endgame is about being right.
+# Retired 2026-08-19: rollouts once sampled the executed move from the
+# search's visit distribution above this many cards.  Kept only so old
+# call sites and saved configs still import; nothing reads it now.
 MIX_ARGMAX_BELOW = 20
 # Weight on the cross-entropy pull toward the search's visit
 # distribution for decisions the search made (AlphaZero-style
@@ -1024,14 +1023,12 @@ def rollout_games(args) -> bytes:
                             dtype=np.float64,
                         )
                         if counts.sum() > 0:
+                            # Distillation target, not a sampling
+                            # distribution: the search's best move is
+                            # what gets played.
                             visit_target = (counts / counts.sum()).astype(
                                 np.float32)
-                            if left > MIX_ARGMAX_BELOW:
-                                idx = int(np.random.default_rng(
-                                    rng.randrange(2**31)).choice(
-                                        len(options), p=visit_target))
-                            else:
-                                idx = int(np.argmax(counts))
+                            idx = int(np.argmax(counts))
                         else:
                             for j, m in enumerate(options):
                                 if _mk(m) == dec.move:
