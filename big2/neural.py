@@ -531,10 +531,12 @@ class SearchAssist(Strategy):
     measure the same player; opponents stay raw policies."""
 
     def __init__(self, policy: Strategy, seed: int = 0,
-                 simulations: int = 64, time_budget: float = 0.10):
+                 simulations: int = 64, time_budget: float = 0.10,
+                 search_from: int = SEARCH_CARDS_4P):
         from big2.agent import IntegratedAgent
 
         self.policy = policy
+        self.search_from = int(search_from)
         self.agent = IntegratedAgent(
             policy, simulations=simulations, depth=10, breadth=6,
             top_p=0.9, time_budget=time_budget, seed=seed,
@@ -544,7 +546,7 @@ class SearchAssist(Strategy):
     def select(self, game, player):
         from big2.endgame import remaining_cards
 
-        if game.num_players == 4 and remaining_cards(game) < SEARCH_CARDS_4P:
+        if game.num_players == 4 and remaining_cards(game) < self.search_from:
             return self.agent.select(game, player)
         return self.policy.select(game, player)
 
