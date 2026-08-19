@@ -457,6 +457,7 @@ def train_joint(
                  for name, net in nets.items()}
 
     ctx = mp.get_context("spawn")
+    per = max(1, games // workers)
     for batch in range(batches):
         t0 = time.time()
         if heartbeat_path:
@@ -480,7 +481,6 @@ def train_joint(
                 "layers": p["layers"], "state_dim": p["state_dim"],
                 "act_dim": p["act_dim"],
             })
-        per = max(1, games // workers)
         rng = random.Random(batch * 7919 + 13)
         # Aim the per-worker cadence so the AGGREGATE beat lands about
         # every `heartbeat` games across the pool.
