@@ -150,11 +150,14 @@ class TestHandlers(unittest.TestCase):
                           headers={"X-Big2-Token": admin_tok}).status_code,
                     200,
                 )
+                # Admins are kept OFF the board: they can face the table
+                # up and read the bots' beliefs, so their scores are not
+                # comparable to a player's.
                 board = c.post("/api/leaderboard", json={"token": admin_tok})
                 self.assertEqual(board.status_code, 200)
                 self.assertEqual(
                     [t["username"] for t in board.get_json()["testers"]],
-                    ["brandonluo", "randomguy"],
+                    ["randomguy"],
                 )
                 # login/stats responses carry the admin flag for the UI
                 login = c.post("/api/login", json={
