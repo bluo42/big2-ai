@@ -1,0 +1,70 @@
+{
+ "corpus": "humans+selfplay",
+ "games": 1770,
+ "lambda": 0.25,
+ "events": {
+  "single|early|low": {
+   "factor": 0.6,
+   "raw": 0.387,
+   "n": 3050,
+   "empirical": 0.2292,
+   "baseline": 0.4345
+  },
+  "single|early|mid": {
+   "factor": 0.6,
+   "raw": 0.3741,
+   "n": 2539,
+   "empirical": 0.2757,
+   "baseline": 0.5043
+  },
+  "single|mid|high": {
+   "factor": 0.6493,
+   "raw": 0.6493,
+   "n": 5718,
+   "empirical": 0.2413,
+   "baseline": 0.3288
+  },
+  "single|mid|mid": {
+   "factor": 0.6,
+   "raw": 0.3688,
+   "n": 2777,
+   "empirical": 0.1548,
+   "baseline": 0.3319
+  },
+  "single|late|mid": {
+   "factor": 0.6,
+   "raw": 0.3651,
+   "n": 2456,
+   "empirical": 0.0566,
+   "baseline": 0.1411
+  },
+  "single|late|high": {
+   "factor": 0.847,
+   "raw": 0.847,
+   "n": 4268,
+   "empirical": 0.1277,
+   "baseline": 0.1474
+  },
+  "single|late|low": {
+   "factor": 0.6,
+   "raw": 0.1498,
+   "n": 1635,
+   "empirical": 0.0208,
+   "baseline": 0.1241
+  },
+  "single|early|high": {
+   "factor": 0.6,
+   "raw": 0.4225,
+   "n": 4577,
+   "empirical": 0.272,
+   "baseline": 0.4693
+  },
+  "single|mid|low": {
+   "factor": 0.6,
+   "raw": 0.2649,
+   "n": 2346,
+   "empirical": 0.084,
+   "baseline": 0.2571
+  }
+ }
+}

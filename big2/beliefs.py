@@ -82,6 +82,16 @@ class BeliefState:
             p: len(game.hands[p]) for p in self.opponents
         }
         self._evidence = self._collect_pass_evidence()
+        # Fitted play-evidence factors (big2/playmodel.py): each single
+        # an opponent played shifts the odds they hold its pair-mate,
+        # damped and clamped.  Collected once; weighted into every
+        # sampled world below, so search determinization, class
+        # probabilities and can-beat estimates all inherit it.
+        try:
+            from big2.playmodel import collect_events
+            self._play_events = collect_events(game, viewpoint)
+        except Exception:
+            self._play_events = []
         self._worlds: Optional[List[Tuple[Dict[int, List[Card]], float]]] = None
 
     # ------------------------------------------------------------------
@@ -93,12 +103,21 @@ class BeliefState:
         return len(self.unseen)
 
     def card_probability_map(self) -> Dict[int, Dict[Card, float]]:
-        """P(opponent p holds card c) for every unseen card (uniform)."""
+        """P(opponent p holds card c) for every unseen card: the uniform
+        hypergeometric row, nudged by fitted play evidence (a player who
+        led a lone single is less likely to hold its pair-mate) and
+        re-fit so rows still sum to hand counts and columns to 1."""
         u = self.n_unseen
-        return {
+        if not u:
+            return {p: {} for p in self.opponents}
+        base = {
             p: {c: self.counts[p] / u for c in self.unseen}
             for p in self.opponents
-        } if u else {p: {} for p in self.opponents}
+        }
+        if not self._play_events:
+            return base
+        from big2.playmodel import adjust_card_map
+        return adjust_card_map(base, self._play_events, self.counts)
 
     def rank_probability_map(self) -> Dict[int, List[float]]:
         """P(opponent p holds >= 1 card of each rank), 13 entries each."""
@@ -175,9 +194,12 @@ class BeliefState:
         return float(self.pass_honesty)
 
     def _world_weight(self, world: Dict[int, List[Card]]) -> float:
-        if not self._evidence:
-            return 1.0
         w = 1.0
+        if self._play_events:
+            from big2.playmodel import world_factor
+            w = world_factor(self._play_events, world)
+        if not self._evidence:
+            return w
         for ev in self._evidence:
             if ev.player not in world:
                 continue

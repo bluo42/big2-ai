@@ -243,7 +243,16 @@ def build_advantage_dataset(
         for game, p, cards in iter_decisions(body):
             if seats == "human" and p != user_seat:
                 continue
-            options, state, act_rows = encode_decision(game, p)
+            # Encode with the MODEL's feature set (danger/plan/beat...),
+            # not the v1 defaults -- the dataset must match the net it
+            # will fine-tune.
+            options, state, act_rows = encode_decision(
+                game, p,
+                include_profiles=getattr(model, "uses_profiles", False),
+                include_danger=getattr(model, "uses_danger", False),
+                include_plan=getattr(model, "uses_plan", False),
+                include_beat=getattr(model, "uses_beat", False),
+            )
             if len(options) < 2:
                 continue
             key = None if not cards else tuple(sorted(int(c) for c in cards))
@@ -298,22 +307,46 @@ def train_awr(
     lr: float = 5e-5,
     minibatch: int = 128,
     seed: int = 0,
+    anchor: float = 0.3,
     verbose: bool = True,
 ):
-    """Advantage-weighted regression fine-tune of a trained checkpoint."""
+    """Advantage-weighted regression fine-tune of a trained checkpoint.
+
+    The net is rebuilt at the checkpoint's own dimensions, so v2-era
+    files (beat features, second attention block) fine-tune as
+    themselves.  ``anchor`` adds a KL pull toward the frozen base
+    policy plus a value-consistency term on the same states: the point
+    is a model that gains the humans' choices at these positions
+    without forgetting how to play everywhere else -- these are the
+    only states in the batch, so unanchored gradient here is free to
+    wreck the trunk for every state not in the batch.
+    """
     import torch
 
-    from big2.neural import ACT_DIM, STATE_DIM, build_net, widen_state_dict
+    from big2.neural import build_net
 
     if not data.get("n"):
         raise ValueError("empty dataset: no usable decisions in the replays")
     torch.manual_seed(seed)
     payload = torch.load(resume, map_location="cpu", weights_only=True)
-    net = build_net(
-        payload.get("d_model", 192), payload.get("heads", 4),
-        state_dim=STATE_DIM, act_dim=ACT_DIM,
-    )
-    net.load_state_dict(widen_state_dict(payload["state_dict"]))
+    sd = payload["state_dict"]
+
+    def _mk_net():
+        return build_net(
+            payload.get("d_model", 192), payload.get("heads", 4),
+            state_dim=sd["state_mlp.0.weight"].shape[1],
+            act_dim=sd["act_mlp.0.weight"].shape[1],
+            layers=payload.get("layers", 2),
+            attn_blocks=2 if any(k.startswith("attn2.") for k in sd) else 1,
+        )
+
+    net = _mk_net()
+    net.load_state_dict(sd)
+    base = _mk_net()
+    base.load_state_dict(sd)
+    base.eval()
+    for prm in base.parameters():
+        prm.requires_grad_(False)
     opt = torch.optim.Adam(net.parameters(), lr=lr)
 
     S = torch.from_numpy(data["state"])
@@ -328,10 +361,17 @@ def train_awr(
         total = 0.0
         for start in range(0, n, minibatch):
             idx = perm[start : start + minibatch]
-            logits, _, _ = net(S[idx], A[idx], M[idx])
+            logits, value, _ = net(S[idx], A[idx], M[idx])
+            with torch.no_grad():
+                blogits, bvalue, _ = base(S[idx], A[idx], M[idx])
             logp = torch.log_softmax(logits, dim=-1)
             picked = logp.gather(1, C[idx].unsqueeze(1)).squeeze(1)
             loss = -(W[idx] * picked).mean()
+            if anchor > 0:
+                bp = torch.softmax(blogits, dim=-1)
+                kl = (bp * (torch.log_softmax(blogits, dim=-1) - logp))
+                loss = loss + anchor * kl.sum(-1).mean()
+                loss = loss + anchor * (value - bvalue).pow(2).mean()
             opt.zero_grad()
             loss.backward()
             torch.nn.utils.clip_grad_norm_(net.parameters(), 1.0)
@@ -341,10 +381,14 @@ def train_awr(
             print(f"[awr] epoch {ep + 1}/{epochs} loss {total / n:.4f}",
                   flush=True)
     meta = dict(payload.get("meta", {}))
-    meta.update({"awr_decisions": int(n), "note": "awr-human"})
+    meta.update({"awr_decisions": int(n), "note": "awr-human",
+                 "anchor": anchor, "resume": resume})
     torch.save(
-        {"state_dict": net.state_dict(), "d_model": payload.get("d_model", 192),
-         "heads": payload.get("heads", 4), "meta": meta},
+        {"state_dict": net.state_dict(),
+         "d_model": payload.get("d_model", 192),
+         "heads": payload.get("heads", 4),
+         "layers": payload.get("layers", 2),
+         "meta": meta},
         out,
     )
     if verbose:

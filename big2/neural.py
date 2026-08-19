@@ -322,6 +322,28 @@ def build_net(d_model: int = 192, heads: int = 4, state_dim: int = STATE_DIM,
     return Big2Net()
 
 
+def load_checkpoint_policy(path: str) -> "PPOPolicy":
+    """Build a PPOPolicy from a saved checkpoint, trusting the
+    checkpoint's own dimensions (state/act widths, layer count, second
+    attention block detected from the state_dict) rather than today's
+    constants — so v1-era and v2-era files both load exactly as they
+    were trained."""
+    import torch
+
+    payload = torch.load(path, map_location="cpu", weights_only=True)
+    sd = payload["state_dict"]
+    net = build_net(
+        payload.get("d_model", 192), payload.get("heads", 4),
+        state_dim=sd["state_mlp.0.weight"].shape[1],
+        act_dim=sd["act_mlp.0.weight"].shape[1],
+        layers=payload.get("layers", 2),
+        attn_blocks=2 if any(k.startswith("attn2.") for k in sd) else 1,
+    )
+    net.load_state_dict(sd)
+    net.eval()
+    return PPOPolicy(net)
+
+
 class PPOPolicy(Strategy):
     """Greedy inference wrapper for a trained set-attention net.
 
