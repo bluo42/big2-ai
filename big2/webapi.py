@@ -202,12 +202,18 @@ _POLICY_FILES = {
 }
 
 
-# Generation tag for the house bots since the tree went live in
-# production (2026-08-18).  Baked into the stamp's version part so the
-# leaderboard can cleanly separate v4-tree games from the earlier era
-# (when serverless silently fell back to the WangBot_v1 port).
-_GENERATION = {"wangbot2": "v4t", "sicario": "v4t", "khabib": "v4t",
-               "leonidas": "v4t"}
+# Generation tag baked into the stamp's version part, so the
+# leaderboard can separate eras cleanly.
+#   v4t (2026-08-18) -- the tree went live, but the serverless export
+#       had no value head, so its IS-MCTS scored every leaf with a
+#       card-count heuristic.
+#   v5  (2026-08-19) -- value head exported and used at search leaves,
+#       plus trick-level potential in the leaf evaluation.  This is the
+#       first deployment where the tree thinks with the trained net.
+_GENERATION = {"wangbot2": "v5", "sicario": "v5", "khabib": "v5",
+               "leonidas": "v5", "v2_patient": "v5",
+               "v2_adversarial": "v5", "v2_self_trained": "v5",
+               "v2_human_trained": "v5"}
 
 
 def model_stamp(kind: Optional[str]) -> str:

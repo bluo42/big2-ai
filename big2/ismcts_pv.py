@@ -298,6 +298,17 @@ class PolicyValueISMCTS:
                     return float(v[0]) + self._phi_bonus(game, player), False
             except Exception:
                 pass
+        # No torch (serverless): the numpy port carries the same value
+        # head, so the deployed tree evaluates leaves with the trained
+        # net rather than falling through to the card count below.
+        vfn = getattr(self.policy, "value", None)
+        if callable(vfn):
+            try:
+                v = vfn(game, player)
+                if v is not None:
+                    return float(v) + self._phi_bonus(game, player), False
+            except Exception:
+                pass
         # Last resort: a card-count read of the race.
         mine = len(game.hands[player])
         others = [len(game.hands[p]) for p in range(game.num_players)

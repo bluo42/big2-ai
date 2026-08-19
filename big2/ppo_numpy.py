@@ -42,12 +42,23 @@ _ATTN2_KEYS = [
 ]
 
 
+# The value head.  It was missing from the export entirely, so every
+# serverless IS-MCTS leaf fell through to the card-count heuristic --
+# the deployed tree was searching with no learned evaluation at all.
+_VALUE_KEYS = [
+    "value_head.0.weight", "value_head.0.bias",
+    "value_head.2.weight", "value_head.2.bias",
+]
+
+
 def export_numpy(pt_path: str, npz_path: str = DEFAULT_NPZ) -> None:
     import torch
 
     payload = torch.load(pt_path, map_location="cpu", weights_only=True)
     sd = payload["state_dict"]
-    keys = list(_PARAM_KEYS) + [k for k in _ATTN2_KEYS if k in sd]
+    keys = (list(_PARAM_KEYS)
+            + [k for k in _ATTN2_KEYS if k in sd]
+            + [k for k in _VALUE_KEYS if k in sd])
     arrays = {k.replace(".", "__"): sd[k].numpy() for k in keys}
     arrays["d_model"] = np.array(payload.get("d_model", 192))
     arrays["heads"] = np.array(payload.get("heads", 4))
@@ -105,7 +116,7 @@ class NumpyPPOPolicy:
         var = x.var(axis=-1, keepdims=True)
         return (x - mean) / np.sqrt(var + 1e-5) * w + b
 
-    def _logits(self, state: np.ndarray, acts: np.ndarray) -> np.ndarray:
+    def _trunk(self, state: np.ndarray, acts: np.ndarray):
         p = self.p
         s = _relu(state @ p["state_mlp.0.weight"].T + p["state_mlp.0.bias"])
         s = _relu(s @ p["state_mlp.2.weight"].T + p["state_mlp.2.bias"])
@@ -119,12 +130,39 @@ class NumpyPPOPolicy:
             # Pre-norm residual second block, exactly as in Big2Net.
             n2 = self._layernorm(x, p["norm2.weight"], p["norm2.bias"])
             x = x + self._attend(n2, "attn2")
+        return s, x
 
+    def _logits(self, state: np.ndarray, acts: np.ndarray) -> np.ndarray:
+        _s, x = self._trunk(state, acts)
+        p = self.p
         return (x @ p["policy_head.weight"].T + p["policy_head.bias"])[:, 0]
 
-    def option_scores(self, game: Big2Game, player: int):
-        """(options, logits) — the same interface as neural.PPOPolicy,
-        so the IS-MCTS agent can use this port as its prior."""
+    @property
+    def has_value(self) -> bool:
+        return "value_head.0.weight" in self.p
+
+    def _value(self, state: np.ndarray, acts: np.ndarray) -> float:
+        """The value head, mean-pooled over moves exactly as Big2Net
+        does (every row is a legal move here, so the mask is all-True)."""
+        p = self.p
+        s, x = self._trunk(state, acts)
+        pooled = x.mean(axis=0)
+        z = np.concatenate([s, pooled])
+        z = _relu(z @ p["value_head.0.weight"].T + p["value_head.0.bias"])
+        out = z @ p["value_head.2.weight"].T + p["value_head.2.bias"]
+        return float(np.asarray(out).reshape(-1)[0])
+
+    def value(self, game: Big2Game, player: int) -> Optional[float]:
+        """Position value in [-1, 1], or None if this export predates
+        the value head (older npz files stay loadable)."""
+        if not self.has_value:
+            return None
+        options, state, acts = self._encode(game, player)
+        if not options:
+            return None
+        return self._value(state, acts)
+
+    def _encode(self, game: Big2Game, player: int):
         from big2.features import FEAT_DIM
         from big2.neural import (
             ACT_DIM, ACT_DIM_BEAT, ACT_DIM_V11, STATE_DIM,
@@ -132,12 +170,17 @@ class NumpyPPOPolicy:
 
         in_dim = self.p["state_mlp.0.weight"].shape[1]
         a_dim = self.p["act_mlp.0.weight"].shape[1]
-        options, state, acts = encode_decision(
+        return encode_decision(
             game, player, include_profiles=(in_dim != FEAT_DIM),
             include_danger=(a_dim >= ACT_DIM_V11),
             include_plan=(a_dim >= ACT_DIM and in_dim >= STATE_DIM),
             include_beat=(a_dim >= ACT_DIM_BEAT),
         )
+
+    def option_scores(self, game: Big2Game, player: int):
+        """(options, logits) — the same interface as neural.PPOPolicy,
+        so the IS-MCTS agent can use this port as its prior."""
+        options, state, acts = self._encode(game, player)
         return options, self._logits(state, acts)
 
     def select(self, game: Big2Game, player: int) -> Optional[Combo]:
