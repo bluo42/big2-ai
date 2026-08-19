@@ -119,10 +119,10 @@ def make_ai(name: str, seed: Optional[int] = None) -> Strategy:
             from big2.neural import SearchAssist
 
             # Deployment strength: the tree runs from the opening deal
-            # (search_from=53, i.e. every decision), 128 simulations,
-            # hard 250ms per move.
+            # (search_from=53, i.e. every decision), up to 64 simulations
+            # spread evenly over the prior's shortlist, 1s per move.
             return SearchAssist(policy, seed=seed,
-                                simulations=128, time_budget=0.25,
+                                simulations=64, time_budget=1.0,
                                 search_from=53)
         except Exception:
             return policy
@@ -701,12 +701,12 @@ def analyze(body: Dict) -> Dict:
             "exact": bool(getattr(d, "exact", False)),
             "elapsed": float(getattr(d, "elapsed", 0.0)),
             "cards_left": int(getattr(d, "cards_left", 0)),
-            "visits": {str(list(mk)): int(v)
-                       for mk, v in (getattr(d, "visits", {}) or {}).items()
-                       if mk},
-            "values": {str(list(mk)): float(v)
-                       for mk, v in (getattr(d, "values", {}) or {}).items()
-                       if mk},
+            # Pass has move_key None -- it must keep its row, since it is
+            # frequently the move the agent actually chooses.
+            "visits": {_ev_key(mk): int(v)
+                       for mk, v in (getattr(d, "visits", {}) or {}).items()},
+            "values": {_ev_key(mk): float(v)
+                       for mk, v in (getattr(d, "values", {}) or {}).items()},
         }
 
     # Exact per-move EV when the position is inside solver range.
@@ -716,13 +716,12 @@ def analyze(body: Dict) -> Dict:
 
         values, solved = solve_move_values(game, seat, budget=20000)
         if solved:
-            exact_ev = {str(list(mk) if mk else []): float(v)
-                        for mk, v in values.items()}
+            exact_ev = {_ev_key(mk): float(v) for mk, v in values.items()}
 
     rows = []
     for m in options:
         mid = _move_id(m)
-        key = str(list(move_key(m)) if m else [])
+        key = _ev_key(move_key(m) if m else None)
         rows.append({
             "cards": list(m.cards) if m else None,
             "type": (m.type.name if m and hasattr(m.type, "name")
@@ -772,6 +771,11 @@ def analyze(body: Dict) -> Dict:
 def _move_id(move: Optional[Combo]) -> str:
     return "pass" if move is None else ",".join(
         str(c) for c in sorted(move.cards))
+
+
+def _ev_key(mk) -> str:
+    """Stable row key for a move key, pass included."""
+    return str(list(mk)) if mk else "[]"
 
 
 def simulate(body: Dict) -> Dict:

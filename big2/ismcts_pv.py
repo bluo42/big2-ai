@@ -83,6 +83,8 @@ SCORE_SCALE = 39.0
 SOLVE_BELOW = 12          # leaves this small are solved, not estimated
 MAX_ROLLOUT_STEPS = 400
 GREEDY_REPLIES_BELOW = 20  # in-tree opponents stop sampling this late
+MAX_CANDIDATES = 3         # the prior's shortlist gets the whole budget
+MIN_CAND_PRIOR = 0.01      # ...and only moves the prior takes seriously
 
 # Tie-breaking (2026-08-19).  Measured values -- PIMC expectations and
 # search Q -- routinely tie outright: in a lost endgame every line is
@@ -193,6 +195,9 @@ class PolicyValueISMCTS:
         self.rng = random.Random(seed)
         self.solve_below = solve_below
         self.time_budget = float(time_budget)
+        # Legacy shortlist knobs: candidate selection now uses
+        # MAX_CANDIDATES / MIN_CAND_PRIOR.  Kept so existing call sites
+        # and checkpoints' saved configs still construct.
         self.breadth = int(breadth)
         self.top_p = float(top_p)
         self.rollout_temp = float(rollout_temp)
@@ -422,20 +427,36 @@ class PolicyValueISMCTS:
             return self._solved_root(game, player, options, prior, keys,
                                      policy_move, left, started)
 
-        # The prior's job is to say which moves are not worth a
-        # simulation.  Keep candidates in descending prior until top_p of
-        # the mass is covered (>=2, <=breadth); everything outside the
-        # cut keeps its entry in the report with zero visits, so the
-        # caller still sees it was considered and dismissed.
+        # Candidates: the prior's top few, and only moves it takes
+        # seriously (>= MIN_CAND_PRIOR).  A move the policy gives 0.1%
+        # is not worth a simulation; the budget belongs to the handful
+        # of moves actually in contention.  Everything outside the cut
+        # keeps its report entry with zero visits, so the caller sees
+        # it was considered and dismissed.
         order = sorted(range(len(options)), key=lambda i: -prior[i])
-        keep, mass = [], 0.0
-        for i in order:
-            if len(keep) >= 2 and (mass >= self.top_p
-                                   or len(keep) >= max(2, self.breadth)):
-                break
-            keep.append(i)
-            mass += prior[i]
-        cand = sorted(keep)
+        cand = [i for i in order[:MAX_CANDIDATES]
+                if prior[i] >= MIN_CAND_PRIOR]
+        if not cand:
+            cand = [order[0]]
+        # Passing is always measured when it is legal and optional.
+        # Hold-or-spend is the decision the prior is least reliable on
+        # (it is the leak the human study found), and it is exactly the
+        # move a lopsided prior starves: without this, the agent can
+        # choose to pass having never simulated passing.
+        pass_idx = next((i for i, m in enumerate(options) if m is None), None)
+        if pass_idx is not None and pass_idx not in cand:
+            cand.append(pass_idx)
+        if len(cand) == 1:
+            # One live candidate and no pass to weigh it against: the
+            # policy is certain, there is nothing to arbitrate, and the
+            # budget would be spent confirming a foregone conclusion.
+            k0 = keys[cand[0]]
+            return SearchResult(
+                move=k0, policy_move=policy_move,
+                visits={k: 0 for k in keys}, values={},
+                prior=dict(zip(keys, prior)), simulations=0, cards_left=left,
+                elapsed=time.monotonic() - started,
+            )
 
         # Enough worlds that the posterior is represented, few enough that
         # sampling them is not itself the cost of the search.
@@ -450,22 +471,13 @@ class PolicyValueISMCTS:
         for t in range(self.simulations):
             if done >= MIN_SIMULATIONS and time.monotonic() >= deadline:
                 break
-            # Sweep first: every candidate is measured once before PUCT
-            # is allowed to concentrate.  Without it a confident prior can
-            # spend the whole budget on its own opinion and never learn
-            # that the alternative wins.
-            if t < len(cand):
-                idx = cand[t]
-            else:
-                total = sum(n)
-                idx = max(
-                    cand,
-                    key=lambda i: (
-                        (w[i] / n[i] if n[i] else 0.0)
-                        + self.c_puct * prior[i] * math.sqrt(total + 1)
-                        / (1 + n[i])
-                    ),
-                )
+            # Even allocation across the candidates.  With a shortlist
+            # this small, the question is not "where is the prior most
+            # promising" (PUCT's question, which starves the
+            # alternatives it is meant to compare) but "which of these
+            # few is actually best" -- and that is answered by giving
+            # each the same number of measurements.
+            idx = cand[t % len(cand)]
             world_hands = worlds[
                 self.rng.choices(range(len(worlds)), weights=wp)[0]
             ][0]
@@ -484,11 +496,8 @@ class PolicyValueISMCTS:
             w[idx] += value
             exact_hits[idx] += int(was_exact)
             done += 1
-            # Settled: nothing left in the budget can overtake the leader.
-            if done >= MIN_SIMULATIONS and len(cand) > 1:
-                top = sorted((n[i] for i in cand), reverse=True)
-                if top[0] - top[1] > self.simulations - done:
-                    break
+        # (Even allocation keeps visit counts level by construction, so
+        # there is no "leader by visits" early exit to take.)
 
         values = {keys[i]: (w[i] / n[i] if n[i] else 0.0)
                   for i in range(len(options))}

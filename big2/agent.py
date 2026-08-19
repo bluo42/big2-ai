@@ -185,13 +185,20 @@ class IntegratedAgent(Strategy):
 
         started = time.monotonic()
         left = remaining_cards(game)
-        ctx = PlanContext(game, player)
-        for m in options:
-            if m is not None and len(m) == len(game.hands[player]) \
-                    and ctx.is_boss(m) is True:
-                return Decision(move_key(m), "solver", cards_left=left,
-                                exact=True,
-                                elapsed=time.monotonic() - started)
+        # Only a move that empties the hand can win on the spot, and
+        # building the planning context is expensive (it partitions the
+        # hand and prices the unseen pool).  Skip it entirely when no
+        # candidate finishes -- otherwise every early-game decision paid
+        # for a check that could not fire, out of the move's own budget.
+        finishers = [m for m in options
+                     if m is not None and len(m) == len(game.hands[player])]
+        if finishers:
+            ctx = PlanContext(game, player)
+            for m in finishers:
+                if ctx.is_boss(m) is True:
+                    return Decision(move_key(m), "solver", cards_left=left,
+                                    exact=True,
+                                    elapsed=time.monotonic() - started)
         if left > self.solve_cards:
             return None
         inf = MirrorState(game, player, rng=self.rng)
