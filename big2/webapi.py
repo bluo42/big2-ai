@@ -534,10 +534,20 @@ def user_stats(body: Dict) -> Dict:
 
 
 def leaderboard(_body: Optional[Dict] = None) -> Dict:
-    """Public testers leaderboard: usernames, games, wins, scores."""
+    """Public testers leaderboard: usernames, games, wins, scores.
+
+    Admin accounts are filtered out: they can face-up the table and
+    read the bots' beliefs, so their scores are not comparable.
+    """
     from big2.store import get_store
 
-    return get_store().leaderboard()
+    board = get_store().leaderboard()
+    admins = admin_users()
+    for key in ("rows", "testers"):
+        if key in board:
+            board[key] = [r for r in board[key]
+                          if str(r.get("username", "")).lower() not in admins]
+    return board
 
 
 def bot_records(_body: Optional[Dict] = None) -> Dict:

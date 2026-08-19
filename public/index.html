@@ -119,6 +119,16 @@
   .opp.passed .badge { display: block; }
   .opp .last { font-size: .7rem; color: var(--muted); min-height: 1em; }
   .opp .beliefs { margin-top: 7px; border-top: 1px dashed var(--line); padding-top: 6px; }
+  /* Admin face-up: the whole table's hands, rendered small under each
+     opponent tile (the client already holds them in full_state). */
+  .opp .faceup { margin-top: 7px; border-top: 1px dashed var(--line); padding-top: 6px;
+    display: flex; flex-wrap: wrap; gap: 2px; justify-content: center; }
+  .opp .faceup .fu { font-size: .66rem; padding: 1px 4px; border-radius: 4px;
+    background: var(--panel-2); border: 1px solid var(--line); }
+  .opp .faceup .fu.s0 { color: var(--s-diamond); }
+  .opp .faceup .fu.s1 { color: var(--s-club); }
+  .opp .faceup .fu.s2 { color: var(--s-heart); }
+  .opp .faceup .fu.s3 { color: #b9c0d8; }
   .opp .bchips { font-size: .66rem; color: var(--muted); line-height: 1.5; }
   .opp .bchips b { color: var(--text); font-weight: 600; }
   .opp .bknown { font-size: .66rem; color: var(--accent-2); }
@@ -356,6 +366,7 @@
         <span class="spacer"></span>
         <button id="hintBtn" class="hidden">Hint</button>
         <button id="beliefsBtn" class="hidden">Beliefs</button>
+        <button id="faceupBtn" class="hidden">Face up</button>
         <span id="passWrap">
           <button id="passConfirm" class="warn hidden">Sure?</button>
           <button id="passBtn" class="warn">Pass</button>
@@ -391,7 +402,7 @@
 
 const RANKS = ["3","4","5","6","7","8","9","10","J","Q","K","A","2"];
 const SUITS = ["♦","♣","♥","♠"]; // diamonds clubs hearts spades
-const AI_KINDS = ["ppo", "ppo11", "evo", "smart", "dmc", "ismcts", "decomp", "linear", "dumper", "lowest", "highest", "random"];
+const AI_KINDS = ["wangbot2", "khabib", "sicario", "leonidas", "ppo", "ppo11", "evo", "smart", "dmc", "ismcts", "decomp", "linear", "dumper", "lowest", "highest", "random"];
 // The locked house table: three distinct chain bots, seats shuffled
 // every game.  Non-admins get no model choice — the chips below just
 // show who is sitting down.
@@ -735,6 +746,35 @@ async function refreshBeliefs() {
   renderBeliefs();
 }
 
+/* Face up: every opponent's hand, live, for admin study.  No server
+   call — the stateless design already ships all hands to the client. */
+let faceupOn = false;
+
+function renderFaceup() {
+  for (const opp of document.querySelectorAll(".opp")) {
+    const old = opp.querySelector(".faceup");
+    if (old) old.remove();
+    if (!faceupOn || !FS || !FS.hands) continue;
+    const hand = FS.hands[+opp.dataset.seat];
+    if (!hand) continue;
+    const box = document.createElement("div");
+    box.className = "faceup";
+    for (const c of [...hand].sort((a, b) => a - b)) {
+      const s = document.createElement("span");
+      s.className = "fu s" + suitOf(c);
+      s.textContent = `${RANKS[Math.floor(c / 4)]}${SUITS[suitOf(c)]}`;
+      box.appendChild(s);
+    }
+    opp.appendChild(box);
+  }
+}
+
+$("faceupBtn").addEventListener("click", () => {
+  faceupOn = !faceupOn;
+  $("faceupBtn").classList.toggle("good", faceupOn);
+  renderFaceup();
+});
+
 // Beliefs + hints are admin-only surfaces: the server 404s them unless
 // BIG2_ADMIN is set (dev) or the request carries an admin account token.
 $("beliefsBtn").addEventListener("click", () => {
@@ -941,6 +981,7 @@ async function applyState(state) {
   seenHistory = state.history.length;
   updateControls();
   refreshBeliefs();
+  renderFaceup();
 
   if (state.phase === "over") { logFinishedGame(); showGameOver(); }
 }
@@ -1042,7 +1083,9 @@ function applyAdminUI() {
   }
   $("hintBtn").classList.toggle("hidden", !admin);
   $("beliefsBtn").classList.toggle("hidden", !admin);
+  $("faceupBtn").classList.toggle("hidden", !admin);
   if (!admin && beliefsOn) { beliefsOn = false; refreshBeliefs(); }
+  if (!admin && faceupOn) { faceupOn = false; renderFaceup(); }
   renderAiRows();
 }
 
