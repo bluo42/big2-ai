@@ -722,13 +722,18 @@ def analyze(body: Dict) -> Dict:
     for m in options:
         mid = _move_id(m)
         key = _ev_key(move_key(m) if m else None)
+        visits = (decision.get("visits") or {}).get(key)
+        value = (decision.get("values") or {}).get(key)
         rows.append({
             "cards": list(m.cards) if m else None,
             "type": (m.type.name if m and hasattr(m.type, "name")
                      else (m.type if m else "pass")),
             "policy": probs.get(mid),
-            "visits": (decision.get("visits") or {}).get(key),
-            "value": (decision.get("values") or {}).get(key),
+            "visits": visits,
+            # An unvisited move carries a placeholder 0.0 internally.
+            # Reporting that as a Q reads as "measured, scored zero" and
+            # flatters moves nobody simulated -- show nothing instead.
+            "value": value if visits else None,
             "exact_ev": exact_ev.get(key),
         })
 
