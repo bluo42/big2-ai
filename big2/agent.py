@@ -141,6 +141,10 @@ class IntegratedAgent(Strategy):
         breadth: Optional[int] = None,
         top_p: Optional[float] = None,
         trick_cutoff: Optional[bool] = None,
+        sims_per_candidate: Optional[int] = None,
+        max_candidates: Optional[int] = None,
+        sample_candidates: bool = False,
+        depth_by_phase=None,
         name: Optional[str] = None,
     ):
         self.policy = policy
@@ -152,6 +156,17 @@ class IntegratedAgent(Strategy):
             search_kw["top_p"] = top_p
         if trick_cutoff is not None:
             search_kw["trick_cutoff"] = trick_cutoff
+        # Training-shape knobs (see big2/ismcts_pv.py): budget stated per
+        # candidate, a shortlist sampled from the prior, and depth that
+        # follows the phase.  Absent, the deployed behaviour is unchanged.
+        if sims_per_candidate is not None:
+            search_kw["sims_per_candidate"] = sims_per_candidate
+        if max_candidates is not None:
+            search_kw["max_candidates"] = max_candidates
+        if sample_candidates:
+            search_kw["sample_candidates"] = True
+        if depth_by_phase is not None:
+            search_kw["depth_by_phase"] = depth_by_phase
         self.searcher = PolicyValueISMCTS(
             policy, simulations=simulations, c_puct=c_puct, depth=depth,
             seed=seed, time_budget=time_budget, **search_kw,
