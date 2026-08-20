@@ -134,9 +134,11 @@ def make_ai(name: str, seed: Optional[int] = None) -> Strategy:
 
             # Deployment strength: the tree runs from the opening deal
             # (search_from=53, i.e. every decision), up to 64 simulations
-            # spread evenly over the prior's shortlist, 1s per move.
+            # spread evenly over the prior's shortlist, 500ms per move --
+            # a hard cap chosen for feel, since three bots think in
+            # sequence and the wait compounds across a turn.
             return SearchAssist(policy, seed=seed,
-                                simulations=64, time_budget=1.0,
+                                simulations=64, time_budget=0.5,
                                 search_from=53)
         except Exception:
             return policy
