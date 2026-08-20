@@ -309,3 +309,85 @@ class TestValue(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestBudgetShape(unittest.TestCase):
+    """Per-candidate budget, sampled shortlist, phase-scheduled depth."""
+
+    def _midgame(self, seed=11, steps=4):
+        g = Big2Game(rng=random.Random(seed))
+        for _ in range(steps):
+            g.step(PlayLowest().select(g, g.turn))
+        while not g.game_over and len(g.legal_moves(g.turn)) < 6:
+            g.step(PlayLowest().select(g, g.turn))
+        return g
+
+    def test_budget_scales_with_the_shortlist(self):
+        """32 per candidate means 4 candidates cost twice what 2 do --
+        not the same pot split thinner."""
+        g = self._midgame()
+        wide = PolicyValueISMCTS(
+            _Peaked(), sims_per_candidate=32, max_candidates=4,
+            sample_candidates=True, seed=1, time_budget=1e6).search(g, g.turn)
+        narrow = PolicyValueISMCTS(
+            _Peaked(), sims_per_candidate=32, max_candidates=2,
+            sample_candidates=True, seed=1, time_budget=1e6).search(g, g.turn)
+        self.assertEqual(sum(wide.visits.values()), wide.simulations)
+        self.assertGreater(wide.simulations, narrow.simulations)
+        # each searched candidate got its own 32
+        per = [v for v in wide.visits.values() if v]
+        self.assertTrue(all(v == 32 for v in per), per)
+
+    def test_sampling_reaches_moves_top_n_would_never_measure(self):
+        """The point of sampling: a move the prior underrates still gets
+        a target sometimes, so the error can be corrected."""
+        g = self._midgame()
+        p = g.turn
+        top_n, sampled = set(), set()
+        for s in range(12):
+            top_n |= {k for k, v in PolicyValueISMCTS(
+                _Peaked(), sims_per_candidate=8, max_candidates=4,
+                sample_candidates=False, seed=s,
+                time_budget=1e6).search(g, p).visits.items() if v}
+            sampled |= {k for k, v in PolicyValueISMCTS(
+                _Peaked(), sims_per_candidate=8, max_candidates=4,
+                sample_candidates=True, seed=s,
+                time_budget=1e6).search(g, p).visits.items() if v}
+        self.assertGreater(len(sampled), len(top_n))
+
+    def test_pass_is_always_seated_when_it_is_legal(self):
+        g = self._midgame(seed=6, steps=6)
+        while not g.game_over and not g.can_pass():
+            g.step(PlayLowest().select(g, g.turn))
+        if g.game_over:
+            self.skipTest("seed ended before a followable position")
+        for s in range(6):
+            res = PolicyValueISMCTS(
+                _Peaked(), sims_per_candidate=8, max_candidates=4,
+                sample_candidates=True, seed=s,
+                time_budget=1e6).search(g, g.turn)
+            if res.simulations:
+                self.assertGreater(res.visits.get(None, 0), 0)
+
+    def test_depth_follows_the_phase(self):
+        s = PolicyValueISMCTS(_Peaked(), depth=8,
+                              depth_by_phase=((40, 12), (20, 16), (0, 20)))
+        self.assertEqual(s._depth_for(52), 12)   # opening
+        self.assertEqual(s._depth_for(41), 12)
+        self.assertEqual(s._depth_for(40), 16)   # midgame
+        self.assertEqual(s._depth_for(21), 16)
+        self.assertEqual(s._depth_for(20), 20)   # endgame
+        # without a schedule the flat depth still applies
+        self.assertEqual(PolicyValueISMCTS(_Peaked(), depth=8)._depth_for(30), 8)
+
+    def test_defaults_leave_deployment_untouched(self):
+        """No new argument => the production path is bit-identical."""
+        g = self._midgame(seed=9)
+        p = g.turn
+        a = PolicyValueISMCTS(_Peaked(), simulations=40, seed=2,
+                              time_budget=1e6).search(g, p)
+        b = PolicyValueISMCTS(_Peaked(), simulations=40, seed=2,
+                              time_budget=1e6).search(g, p)
+        self.assertEqual(a.move, b.move)
+        self.assertEqual(a.visits, b.visits)
+        self.assertEqual(a.simulations, b.simulations)

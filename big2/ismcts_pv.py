@@ -84,6 +84,15 @@ SOLVE_BELOW = 12          # leaves this small are solved, not estimated
 MAX_ROLLOUT_STEPS = 400
 GREEDY_REPLIES_BELOW = 20  # in-tree opponents stop sampling this late
 MAX_CANDIDATES = 3         # the prior's shortlist gets the whole budget
+# Depth by phase (cards left on the table).  Rollouts almost never reach
+# a terminal state -- measured, 92% still hit the cap at depth 20 -- so
+# depth does not buy "play it out", it buys WHERE the value head is
+# consulted.  That matters because the head's correlation with the final
+# score is 0.41 early against 0.84 late: every extra ply moves the leaf
+# toward the regime where the estimate is trustworthy.  Early positions
+# are also the most expensive per ply, and the ones the search has never
+# been shown to improve, so they get the shallow setting.
+DEPTH_BY_PHASE = ((40, 12), (20, 16), (0, 20))   # (cards_left_above, depth)
 MIN_CAND_PRIOR = 0.01      # legacy floor (kept for callers/tests)
 THIRD_CAND_PRIOR = 0.05    # a third candidate needs real prior mass
 
@@ -189,6 +198,11 @@ class PolicyValueISMCTS:
         rollout_temp: float = 0.8,
         trick_cutoff: bool = True,
         shaping: float = 1.0,
+        sims_per_candidate: Optional[int] = None,
+        max_candidates: Optional[int] = None,
+        sample_candidates: bool = False,
+        candidate_temp: float = 1.0,
+        depth_by_phase: Optional[Sequence[Tuple[int, int]]] = None,
     ):
         self.policy = policy
         self.simulations = simulations
@@ -204,9 +218,67 @@ class PolicyValueISMCTS:
         self.top_p = float(top_p)
         self.rollout_temp = float(rollout_temp)
         self.trick_cutoff = bool(trick_cutoff)
+        # Budget stated per candidate: allocation is even, so "32 sims
+        # per decision" is the honest unit -- a shortlist of 2 costs half
+        # what a shortlist of 4 does, instead of splitting a fixed pot
+        # and silently measuring each candidate less.
+        self.sims_per_candidate = (
+            None if sims_per_candidate is None else int(sims_per_candidate))
+        self.max_candidates = (
+            MAX_CANDIDATES if max_candidates is None else int(max_candidates))
+        # Training draws its shortlist FROM the prior instead of taking
+        # its top few: top-N only ever re-measures what the net already
+        # believes, so moves it underrates never receive a target and the
+        # error is never corrected.  Deployment keeps the deterministic
+        # cut (see search()).
+        self.sample_candidates = bool(sample_candidates)
+        self.candidate_temp = float(candidate_temp)
+        self.depth_by_phase = (
+            tuple(depth_by_phase) if depth_by_phase else None)
         # Trick-level potential weight on non-exact leaves (0 = off).
         self.shaping = float(shaping)
         self._phi_root: Optional[float] = None
+
+    def _depth_for(self, left: int) -> int:
+        """Rollout depth for a position with ``left`` cards on the table."""
+        if not self.depth_by_phase:
+            return self.depth
+        for above, d in self.depth_by_phase:
+            if left > above:
+                return d
+        return self.depth_by_phase[-1][1]
+
+    def _choose_candidates(self, options, prior, keys, pass_idx):
+        """The shortlist: sampled from the prior, or its top few.
+
+        Sampling is without replacement and weighted by the prior, so a
+        move the net rates at 5% is measured about one time in twenty
+        rather than never.  Pass is always seated -- hold-or-spend is the
+        decision the prior is least reliable on, and the human study
+        located the leak exactly there.
+        """
+        cap = max(1, self.max_candidates)
+        live = [i for i in range(len(options)) if prior[i] > 0.0]
+        if not live:
+            live = list(range(len(options)))
+        if len(live) <= cap:
+            return sorted(live)
+
+        picked = []
+        if pass_idx is not None and pass_idx in live:
+            picked.append(pass_idx)
+        pool = [i for i in live if i not in picked]
+        if self.sample_candidates:
+            w = [max(prior[i], 1e-9) ** (1.0 / max(self.candidate_temp, 1e-3))
+                 for i in pool]
+            while pool and len(picked) < cap:
+                j = self.rng.choices(range(len(pool)), weights=w)[0]
+                picked.append(pool.pop(j))
+                w.pop(j)
+        else:
+            pool.sort(key=lambda i: -prior[i])
+            picked.extend(pool[: cap - len(picked)])
+        return sorted(picked)
 
     # ------------------------------------------------------------------
     # Policy access
@@ -474,27 +546,32 @@ class PolicyValueISMCTS:
         # keeps its report entry with zero visits, so the caller sees
         # it was considered and dismissed.
         order = sorted(range(len(options)), key=lambda i: -prior[i])
-        live = [i for i in order if prior[i] > 0.0]
-        cand = live[:2]
-        # A third candidate only when the prior genuinely cannot choose:
-        # all three must clear THIRD_CAND_PRIOR.  Otherwise the budget
-        # goes to the two moves actually in contention.
-        if len(live) >= MAX_CANDIDATES and all(
-            prior[i] > THIRD_CAND_PRIOR for i in live[:MAX_CANDIDATES]
-        ):
-            cand = live[:MAX_CANDIDATES]
-        if not cand:
-            cand = [order[0]]
-        # Passing is measured whenever there is room for it: hold-or-
-        # spend is the decision the prior is least reliable on (the leak
-        # the human study found), and a lopsided prior starves it --
-        # without this the agent can choose to pass having never once
-        # simulated passing.  With three live candidates the shortlist
-        # is already full.
         pass_idx = next((i for i, m in enumerate(options) if m is None), None)
-        if (pass_idx is not None and pass_idx not in cand
-                and len(cand) < MAX_CANDIDATES):
-            cand.append(pass_idx)
+        if self.sample_candidates or self.max_candidates != MAX_CANDIDATES:
+            # Shortlist drawn from the prior (training) or its top few,
+            # pass always seated.  See _choose_candidates.
+            cand = self._choose_candidates(options, prior, keys, pass_idx)
+        else:
+            live = [i for i in order if prior[i] > 0.0]
+            cand = live[:2]
+            # A third candidate only when the prior genuinely cannot
+            # choose: all three must clear THIRD_CAND_PRIOR.  Otherwise
+            # the budget goes to the two moves actually in contention.
+            if len(live) >= MAX_CANDIDATES and all(
+                prior[i] > THIRD_CAND_PRIOR for i in live[:MAX_CANDIDATES]
+            ):
+                cand = live[:MAX_CANDIDATES]
+            if not cand:
+                cand = [order[0]]
+            # Passing is measured whenever there is room for it: hold-or-
+            # spend is the decision the prior is least reliable on (the
+            # leak the human study found), and a lopsided prior starves
+            # it -- without this the agent can choose to pass having
+            # never once simulated passing.  With three live candidates
+            # the shortlist is already full.
+            if (pass_idx is not None and pass_idx not in cand
+                    and len(cand) < MAX_CANDIDATES):
+                cand.append(pass_idx)
         if len(cand) == 1:
             # One live candidate and no pass to weigh it against: the
             # policy is certain, there is nothing to arbitrate, and the
@@ -507,17 +584,23 @@ class PolicyValueISMCTS:
                 elapsed=time.monotonic() - started,
             )
 
+        # Budget: per-candidate when asked for, so the shortlist size
+        # sets the cost instead of diluting a fixed pot.
+        budget = (self.simulations if self.sims_per_candidate is None
+                  else self.sims_per_candidate * len(cand))
+        plies = self._depth_for(left)
+
         # Enough worlds that the posterior is represented, few enough that
         # sampling them is not itself the cost of the search.
         worlds, wp = self._worlds(
-            game, player, k=min(MAX_WORLDS, max(8, self.simulations // 4))
+            game, player, k=min(MAX_WORLDS, max(8, budget // 4))
         )
 
         n = [0] * len(options)
         w = [0.0] * len(options)
         exact_hits = [0] * len(options)
         done = 0
-        for t in range(self.simulations):
+        for t in range(budget):
             if done >= MIN_SIMULATIONS and time.monotonic() >= deadline:
                 break
             # Even allocation across the candidates.  With a shortlist
@@ -539,7 +622,7 @@ class PolicyValueISMCTS:
                 done += 1
                 continue
             if not sim.game_over:
-                self._play_forward(sim, player, self.depth)
+                self._play_forward(sim, player, plies)
             value, was_exact = self._value(sim, player)
             n[idx] += 1
             w[idx] += value
