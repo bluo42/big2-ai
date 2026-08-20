@@ -74,9 +74,46 @@ class TestHandlers(unittest.TestCase):
             self.assertEqual(len(hands[rep["winner"]]), 0)
             self.assertEqual(sum(rep["scores"].values()), 0)
 
-    def test_progress_empty_ok(self):
-        out = webapi.progress()
-        self.assertIn("rows", out)
+    def test_analyze_defaults_to_the_seats_own_model(self):
+        """The explorer must show what the seated model is actually
+        doing: the analyzing model resolves from the replay's player
+        label unless the request overrides it."""
+        sim = webapi.simulate({"agents": ["ppo11", "smart", "lowest",
+                                          "dumper"], "games": 1, "seed": 4})
+        rep = sim["replays"][0]
+        hit = None
+        for k in range(len(rep["actions"])):
+            d = webapi.analyze({"replay": rep, "k": k})
+            if d.get("over"):
+                break
+            if d.get("seat") == 0:
+                hit = d
+                break
+        self.assertIsNotNone(hit)
+        self.assertEqual(hit["model"], "ppo11")
+        self.assertEqual(hit["model_label"], "WangBot_v1")
+        self.assertTrue(hit["model_is_seats_own"])
+        # an explicit override still wins, and says it is not the seat's
+        # (linear is not seated at this table, so it can't be "own")
+        d = webapi.analyze({"replay": rep, "k": 0, "model": "linear"})
+        self.assertEqual(d["model"], "linear")
+        self.assertFalse(d["model_is_seats_own"])
+
+    def test_kind_resolver_reads_every_label_shape(self):
+        cases = (("0:wangbot2", "wangbot2"), ("wangbot2@a1b2c3", "wangbot2"),
+                 ("AI 2 (Khabib)", "khabib"), ("v2", "wangbot2"),
+                 ("WangBot_v1", "ppo11"), ("smart", "smart"),
+                 ("brandonluo", None), ("You", None), ("", None))
+        for name, want in cases:
+            self.assertEqual(webapi._kind_from_name(name), want, name)
+
+    def test_hint_uses_the_table_model(self):
+        view = webapi.new_game({"num_ai": 1, "ai": ["ppo11"], "seed": 3})
+        state = view["full_state"]
+        game, _ = webapi._load({"state": state})
+        if game.turn == webapi.HUMAN and not game.game_over:
+            out = webapi.hint({"state": state})
+            self.assertEqual(out["model"], "WangBot_v1")
 
     def test_two_ppo_lines_are_distinct_kinds(self):
         self.assertIn("ppo11", webapi.AI_KINDS)
@@ -99,7 +136,7 @@ class TestHandlers(unittest.TestCase):
             self.assertEqual(c.post("/api/hint", json={}).status_code, 404)
             self.assertEqual(c.post("/api/beliefs", json={}).status_code, 404)
             self.assertEqual(c.post("/api/simulate", json={}).status_code, 404)
-            self.assertEqual(c.get("/api/progress").status_code, 404)
+            self.assertEqual(c.post("/api/analyze", json={}).status_code, 404)
             # core play surface stays open
             self.assertEqual(
                 c.post("/api/new", json={"num_ai": 1, "ai": ["lowest"]}).status_code,
@@ -107,7 +144,8 @@ class TestHandlers(unittest.TestCase):
             )
             app.config["BIG2_ADMIN"] = True
             self.assertEqual(c.get("/admin").status_code, 200)
-            self.assertEqual(c.get("/api/progress").status_code, 200)
+            self.assertNotEqual(
+                c.post("/api/analyze", json={}).status_code, 404)
         finally:
             app.config["BIG2_ADMIN"] = old
 
@@ -145,10 +183,10 @@ class TestHandlers(unittest.TestCase):
                 self.assertEqual(
                     c.get(f"/admin?token={admin_tok}").status_code, 200
                 )
-                self.assertEqual(
-                    c.get("/api/progress",
-                          headers={"X-Big2-Token": admin_tok}).status_code,
-                    200,
+                self.assertNotEqual(
+                    c.post("/api/analyze", json={},
+                           headers={"X-Big2-Token": admin_tok}).status_code,
+                    404,
                 )
                 # Admins are kept OFF the board: they can face the table
                 # up and read the bots' beliefs, so their scores are not

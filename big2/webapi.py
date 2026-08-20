@@ -19,6 +19,7 @@ Handlers (all pure: dict in -> dict out):
 from __future__ import annotations
 
 import random
+import re
 from typing import Dict, List, Optional
 
 from big2.cards import Card
@@ -492,13 +493,18 @@ def apply_action(body: Dict) -> Dict:
 
 
 def hint(body: Dict) -> Dict:
-    game, _ = _load(body)
+    """Suggest a move with a model from THIS table's lineup -- the hint
+    shows what the live opponents would do in your chair, not what a
+    retired champion once thought."""
+    game, ai_kinds = _load(body)
     if game.game_over or game.turn != HUMAN:
         raise ValueError("not your turn")
-    move = make_ai("evo").select(game, HUMAN)
+    kind = next((k for k in ai_kinds.values() if k), "wangbot2")
+    move = get_ai(kind, seed=0).select(game, HUMAN)
     return {
         "cards": list(move.cards) if move else None,
         "type": move.type.name if move else "PASS",
+        "model": KIND_LABEL.get(kind, kind),
     }
 
 
@@ -616,40 +622,6 @@ def bot_records(_body: Optional[Dict] = None) -> Dict:
     return get_store().bot_records()
 
 
-def progress(_body: Optional[Dict] = None) -> Dict:
-    """Plateau-probe rows written by big2/evolve.py during training."""
-    import os
-
-    path = os.path.join(
-        os.path.dirname(__file__), "policies", "evolve", "progress.csv"
-    )
-    rows = []
-    try:
-        with open(path) as f:
-            for line in f:
-                parts = line.strip().split(",")
-                if len(parts) != 8:
-                    continue
-                isl, games, phase, tid, layers, lr, vs_base, vs_anchor = parts
-                rows.append(
-                    {
-                        "island": int(isl),
-                        "games": int(games),
-                        "phase": int(phase),
-                        "tid": tid,
-                        "layers": int(layers),
-                        "lr": float(lr),
-                        "vs_baselines": float(vs_base),
-                        "vs_anchors": (
-                            None if vs_anchor == "nan" else float(vs_anchor)
-                        ),
-                    }
-                )
-    except FileNotFoundError:
-        pass
-    return {"rows": rows}
-
-
 def recorded_games(body: Dict) -> Dict:
     """Stored human games, newest first, for the admin explorer."""
     from big2.store import get_store
@@ -682,15 +654,48 @@ def delete_recorded(body: Dict) -> Dict:
     return {"confirmed": True, "deleted": n}
 
 
+def _kind_from_name(name) -> Optional[str]:
+    """Resolve a replay's player label back to an AI kind.
+
+    Accepts the explorer's "0:wangbot2" rows, lineup stamps
+    ("wangbot2@a1b2c3"), display labels ("v2", "Sicario", "WangBot_v1"),
+    play-page names ("AI 2 (Khabib)"), and bare kinds.  None means a
+    human seat (usernames, "You").
+    """
+    if not name:
+        return None
+    s = str(name).strip()
+    if ":" in s:
+        s = s.split(":", 1)[1]
+    if "@" in s:
+        s = s.split("@", 1)[0]
+    m = re.search(r"\(([^)]+)\)", s)
+    if m:
+        s = m.group(1)
+    s = s.strip().lower()
+    for kind, label in KIND_LABEL.items():
+        if s == label.lower():
+            return kind
+    if s in AI_KINDS:
+        return s
+    return None
+
+
 def analyze(body: Dict) -> Dict:
     """Full analysis of one position in a recorded game.
 
     Rebuilds the hand at action index ``k``, then reports, from the
-    acting seat's point of view: what each candidate move is worth to
-    the chosen model (policy probability, search visits and values,
-    exact solver EV where the position is solvable), which move the
-    agent would actually play and why, and the seat's beliefs about
-    every opponent -- the 52-card posterior and the combo classes.
+    acting seat's point of view: what each candidate move is worth
+    (policy probability, search visits and values, exact solver EV
+    where the position is solvable), which move the agent would
+    actually play and why, and the seat's beliefs about every opponent
+    -- the 52-card posterior and the combo classes.
+
+    The analyzing model defaults to **the model actually seated there**
+    (resolved from the replay's player labels), so the view shows what
+    that seat's own brain was doing -- an explicit ``model`` in the
+    request overrides it, and human seats fall back to the override or
+    the house default.
     """
     import numpy as np
 
@@ -701,7 +706,6 @@ def analyze(body: Dict) -> Dict:
 
     replay = body.get("replay") or {}
     k = int(body.get("k", 0))
-    kind = body.get("model") or "wangbot2"
     game = rebuild_game(replay)
     actions = replay.get("actions") or []
     for act in actions[:k]:
@@ -717,6 +721,11 @@ def analyze(body: Dict) -> Dict:
         return {"over": True}
 
     seat = game.turn
+    seat_names = replay.get("players") or []
+    seat_kind = _kind_from_name(
+        seat_names[seat] if seat < len(seat_names) else None
+    )
+    kind = body.get("model") or seat_kind or "wangbot2"
     options: List[Optional[Combo]] = list(game.legal_moves(seat))
     if game.can_pass():
         options.append(None)
@@ -804,6 +813,9 @@ def analyze(body: Dict) -> Dict:
 
     return {
         "seat": seat,
+        "model": kind,
+        "model_label": KIND_LABEL.get(kind, kind),
+        "model_is_seats_own": bool(seat_kind) and kind == seat_kind,
         "seat_name": names.get(seat, f"seat {seat}"),
         "hand": sorted(game.hands[seat]),
         "cards_left": remaining_cards(game),

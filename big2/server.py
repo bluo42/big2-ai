@@ -124,13 +124,6 @@ def analyze():
     return _handle(webapi.analyze)
 
 
-@app.route("/api/progress")
-def progress():
-    if not _admin_request_ok():
-        abort(404)
-    return jsonify(webapi.progress())
-
-
 @app.route("/api/leaderboard", methods=["POST"])
 def leaderboard():
     # Public by design: every player sees the testers leaderboard.

@@ -179,15 +179,7 @@
       </table></div>
     </div>
 
-    <div class="panel">
-      <h2>Training progress <button id="progBtn" style="float:right;padding:2px 10px;font-size:.72rem">refresh</button></h2>
-      <div id="progChart" style="min-height:40px;color:var(--muted);font-size:.8rem">
-        no probe data yet — appears while <code>big2.evolve</code> runs
-      </div>
-      <div id="progLegend" style="font-size:.68rem;color:var(--muted);margin-top:6px"></div>
-    </div>
-
-    <div class="panel">
+        <div class="panel">
       <h2>Testers leaderboard <button id="boardBtn" style="float:right;padding:2px 10px;font-size:.72rem">refresh</button></h2>
       <div id="boardBox" style="color:var(--muted);font-size:.8rem">loading…</div>
     </div>
@@ -492,8 +484,9 @@ let anSeq = 0;           // request sequence: late replies are dropped
 
 function fillModelPicker() {
   const sel = $("analyzeModel");
-  sel.innerHTML = AI_KINDS.map((k) =>
-    `<option value="${k}">${KIND_LABEL[k] || k}</option>`).join("");
+  sel.innerHTML = `<option value="">seat's own model</option>` +
+    AI_KINDS.map((k) =>
+      `<option value="${k}">${KIND_LABEL[k] || k}</option>`).join("");
 }
 
 async function loadRecorded() {
@@ -565,7 +558,8 @@ async function analyzePosition() {
     : (out.played_move === null ? "pass" : "");
   $("anHead").innerHTML =
     `<b>${out.seat_name}</b> to act · ${out.cards_left} cards left · ` +
-    `${out.unseen} unseen<br>` +
+    `${out.unseen} unseen · analyzed by <b>${out.model_label || "?"}</b>` +
+    `${out.model_is_seats_own ? " (its own brain)" : ""}<br>` +
     `agent would: <b>${d.move ? d.move.map(cardText).join(" ") : "pass"}</b> ` +
     `<span style="color:var(--muted)">(${d.source}` +
     `${d.exact ? ", exact" : ""}${d.margin ? `, margin ${d.margin.toFixed(2)}` : ""})</span>` +
@@ -641,58 +635,6 @@ document.addEventListener("keydown", (e) => {
   else if (e.key === "ArrowLeft") { stopAuto(); step(-1); }
   else if (e.key === " ") { e.preventDefault(); $("btnPlay").click(); }
 });
-
-/* ---------- training progress chart ---------- */
-
-const ISLAND_COLORS = ["#4f8cff", "#37c978", "#e0a355", "#d64550"];
-
-async function loadProgress() {
-  let rows = [];
-  try {
-    const res = await fetch(withToken("/api/progress"));
-    rows = res.ok ? (await res.json()).rows : [];
-  } catch {}
-  const holder = $("progChart");
-  if (!rows.length) {
-    holder.innerHTML = "no probe data yet — appears while <code>big2.evolve</code> runs";
-    $("progLegend").textContent = "";
-    return;
-  }
-  const W = 560, H = 190, PAD = 34;
-  const xs = rows.map((r) => r.games);
-  const ys = rows.flatMap((r) => [r.vs_baselines, r.vs_anchors].filter((v) => v !== null));
-  const xMax = Math.max(...xs), yMin = Math.min(-1, ...ys), yMax = Math.max(1, ...ys);
-  const X = (g) => PAD + (g / xMax) * (W - PAD - 8);
-  const Y = (v) => H - PAD + ((v - yMin) / (yMax - yMin)) * (PAD + 14 - H);
-  let svg = `<svg viewBox="0 0 ${W} ${H}" style="width:100%;background:var(--panel-2);border-radius:8px">`;
-  svg += `<line x1="${PAD}" y1="${Y(0)}" x2="${W - 8}" y2="${Y(0)}" stroke="#2e3854" stroke-width="1"/>`;
-  svg += `<text x="${PAD - 4}" y="${Y(0) + 3}" fill="#8a94ad" font-size="9" text-anchor="end">0</text>`;
-  svg += `<text x="${PAD - 4}" y="${Y(yMax) + 8}" fill="#8a94ad" font-size="9" text-anchor="end">${yMax.toFixed(1)}</text>`;
-  svg += `<text x="${PAD - 4}" y="${Y(yMin)}" fill="#8a94ad" font-size="9" text-anchor="end">${yMin.toFixed(1)}</text>`;
-  svg += `<text x="${W - 8}" y="${H - 6}" fill="#8a94ad" font-size="9" text-anchor="end">${(xMax / 1000).toFixed(0)}k games</text>`;
-  const islands = [...new Set(rows.map((r) => r.island))].sort();
-  for (const isl of islands) {
-    const mine = rows.filter((r) => r.island === isl).sort((a, b) => a.games - b.games);
-    const color = ISLAND_COLORS[isl % ISLAND_COLORS.length];
-    const path = (key) => mine
-      .filter((r) => r[key] !== null)
-      .map((r, i) => `${i ? "L" : "M"}${X(r.games).toFixed(1)},${Y(r[key]).toFixed(1)}`)
-      .join(" ");
-    if (path("vs_baselines"))
-      svg += `<path d="${path("vs_baselines")}" fill="none" stroke="${color}" stroke-width="2"/>`;
-    if (path("vs_anchors"))
-      svg += `<path d="${path("vs_anchors")}" fill="none" stroke="${color}" stroke-width="1.6" stroke-dasharray="5 4" opacity=".8"/>`;
-  }
-  svg += "</svg>";
-  holder.innerHTML = svg;
-  $("progLegend").innerHTML =
-    islands.map((i) =>
-      `<span style="color:${ISLAND_COLORS[i % 4]}">■</span> island ${i}`).join(" &nbsp; ") +
-    " &nbsp;&mdash;&nbsp; solid: avg score vs baselines (smart/decomp/dumper) &middot; dashed: vs anchor champions";
-}
-$("progBtn").addEventListener("click", loadProgress);
-loadProgress();
-setInterval(loadProgress, 60_000);
 
 /* ---------------- testers leaderboard ---------------- */
 
