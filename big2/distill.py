@@ -63,10 +63,16 @@ LATEST = os.path.join(POLICIES, "wangbot_v3_latest.pt")
 SIMS_PER_CANDIDATE = 32
 MAX_CANDIDATES = 5
 DEPTH_BY_PHASE = ((40, 12), (0, 16))
-Q_TEMP = 0.10          # Q units.  Matched to OVERRIDE_MARGIN_Q, the
-#   project's own bar for "a real difference": a gap that size becomes
-#   a ~2.7x preference, not a near-one-hot target.  Sharper than this
-#   turns 32-simulation noise into violent gradient.
+Q_TEMP = 0.05          # Q units, set from the MEASURED noise floor, not
+#   from a decision threshold.  Re-searching the same positions across
+#   seeds: between-candidate spread 0.215, across-seed noise 0.022
+#   (signal/noise 9.6).  Q is normalized so 1.0 = 39 points, which makes
+#   that 0.215 spread worth ~8.4 points/game -- a gap that must become a
+#   decisive target, not a mild preference.  At tau = 2x the noise
+#   floor, a real gap is ~74x while two moves inside noise stay within
+#   1.5x: sharp where the measurement is trustworthy, flat where it is
+#   not.  (An earlier 0.10 came from OVERRIDE_MARGIN_Q, which is the bar
+#   for overruling the policy -- a threshold, not a temperature.)
 PLAY_TEMP = 1.0        # temperature for sampling the move actually played
 
 # Evaluation: every seat searching at production settings.
@@ -225,7 +231,8 @@ def update(net, opt, samples, epochs: int = 2, batch: int = 64,
             adim = chunk[0]["acts"].shape[1]
             S = torch.zeros(b, sdim)
             A = torch.zeros(b, a, adim)
-            M = torch.zeros(b, a, dtype=torch.bool)
+            M = torch.zeros(b, a, dtype=torch.bool)     # legal options
+            C = torch.zeros(b, a, dtype=torch.bool)     # evaluated candidates
             T = torch.zeros(b, a)
             V = torch.zeros(b)
             B = torch.zeros(b, chunk[0]["belief"].shape[0])
@@ -234,12 +241,20 @@ def update(net, opt, samples, epochs: int = 2, batch: int = 64,
                 S[k] = torch.from_numpy(s["state"])
                 A[k, :n] = torch.from_numpy(s["acts"])
                 M[k, :n] = True
-                T[k, torch.from_numpy(s["cand"])] = torch.from_numpy(
-                    s["target"])
+                cand = torch.from_numpy(s["cand"])
+                C[k, cand] = True
+                T[k, cand] = torch.from_numpy(s["target"])
                 V[k] = s["value"]
                 B[k] = torch.from_numpy(s["belief"])
             logits, value, belief = net(S, A, M)
-            logp = F.log_softmax(logits.masked_fill(~M, -1e9), dim=1)
+            # The target covers only the SAMPLED candidates, so the loss
+            # must too.  Normalizing over every legal move would teach
+            # "everything I did not evaluate is worth zero" -- a claim
+            # the search never made, and one that would progressively
+            # collapse the policy onto whatever the shortlist happened
+            # to draw.  Restricted to the candidates, the loss teaches
+            # exactly what was measured: their relative worth.
+            logp = F.log_softmax(logits.masked_fill(~C, -1e9), dim=1)
             pol = -(T * logp).sum(1).mean()
             val = F.mse_loss(value, V)
             bel = F.binary_cross_entropy_with_logits(belief, B)
@@ -327,6 +342,12 @@ def main() -> None:
     parser.add_argument("--out", default=OUT)
     parser.add_argument("--eval-games", type=int, default=1000)
     parser.add_argument("--eval-only", action="store_true")
+    parser.add_argument("--eval-every", type=int, default=500,
+                        help="mid-run checkpoint eval, in games (0 = off). "
+                             "Distillation can soften a peaked policy far "
+                             "faster than it improves it; this reads the "
+                             "trajectory instead of the endpoint.")
+    parser.add_argument("--eval-every-games", type=int, default=200)
     parser.add_argument("--skip-eval", action="store_true")
     args = parser.parse_args()
 
@@ -403,6 +424,13 @@ def main() -> None:
                     "layers": arch["layers"],
                     "meta": {"games": done, "note": "v3-distill"}},
                    LATEST)
+        if args.eval_every and done % args.eval_every == 0 \
+                and done < args.games:
+            rep = evaluate(LATEST, args.eval_every_games,
+                           seed=1234 + done, workers=args.workers)
+            print(f"[check] @{done} games: {rep['score']:+.3f}/game vs the "
+                  f"house slate ({rep['games']} games, win rate "
+                  f"{rep['win_rate']:.3f})", flush=True)
     os.replace(LATEST, args.out)
     print(f"[distill] trained {done} games -> {args.out}", flush=True)
 
